@@ -1,6 +1,6 @@
-# 行小道本地 Agent v1.4.0
+# 行小道本地 Agent v2.1.0
 
-v1.4.0 保留 v1.3.0 的浏览器项目卡、人工写回确认和 W1→W4 串联，并建立 GitHub 私库协作、自动测试、安全检查、源码发布包和回滚基线。本版不改变业务工作流输出，重点是让团队可以安全地共同维护代码。
+v2.1.0 保留 v2.0.0 的 OpenAI 兼容接口，并完成 Vercel Preview、Bearer 鉴权、模型列表和真实对话调用验证。清小搭无法连接境外 Vercel 服务，因此本版不宣称已接入或上线清小搭；国内部署与审核上线顺延至 v2.3。多模态能力从 v2.2 开始通过小步 PR 合入。
 
 项目卡只保存在当前浏览器，不是数据库。上传文件正文、API Key 和完整节点轨迹不会进入项目卡。
 
@@ -95,11 +95,11 @@ W3、W4 的 `7C` 节点只接受原文完全匹配或仅空白差异匹配。模
 ```text
 MODEL_PROVIDER=stepfun
 MODEL_BASE_URL=https://api.stepfun.com/step_plan/v1
-MODEL_NAME=step-router-v1
+MODEL_NAME=step-3.5-flash
 APP_MODE=live
 ```
 
-`step-router-v1` 是 Coding Plan 的智能路由模型，会在复杂请求与高频请求之间自动选择合适引擎。`.env` 下半部分保留了 DeepSeek 备用块；切换时只保留其中一组未注释的 `MODEL_*` 配置即可。
+当前已验证配置使用 `step-3.5-flash` 和 Step Plan 地址。`.env` 下半部分保留了 DeepSeek 备用块；切换时只保留其中一组未注释的 `MODEL_*` 配置即可。
 
 开发时可将 `APP_MODE=mock`，这样不会调用真实 API，也不会产生费用。模拟结果只能用于检查工程链路，不能评价 Agent 的研究能力。
 
@@ -165,7 +165,14 @@ node --test tests\js\test_project_store.cjs
 - `GET /api/runs/{run_id}/download.md`：下载最终 Markdown；
 - `GET /docs`：FastAPI 自动生成的接口调试页。
 
-目前这些是本地开发接口。清小搭需要的 `/models`、`/chat/completions`、Bearer 鉴权和标准 SSE 留到 v2.0—v2.1。
+本地页面继续使用 `/api/*` 接口。面向清小搭的标准接口为：
+
+- `GET /v1/models`：Bearer 鉴权后的模型列表；
+- `POST /v1/chat/completions`：文本消息意图识别与工作流引导；
+- `stream: true`：返回标准 Server-Sent Events，最后依次给出 stop 帧和 `[DONE]`；
+- `max_tokens: 1`：返回最小探测响应，不调用模型。
+
+调用标准接口时使用 `AGENT_API_KEY`；模型服务使用 `MODEL_API_KEY`。两者必须不同。完整契约与部署准备见 `docs/v2.0.0-协议与验收.md` 和 `docs/v2.1.0-Vercel与清小搭接入.md`。
 
 ## 八、数据与版本边界
 
@@ -189,4 +196,4 @@ node --test tests\js\test_project_store.cjs
 
 GitHub Actions 会在 Pull Request 和 `main` 更新时自动执行完整质量门；推送与 `pyproject.toml` 一致的 `v*` 标签时，会再次验收并创建带 SHA-256 校验文件的 GitHub Release。
 
-v1.1.0—v1.3.0 历史说明继续保留；v1.3.0 功能搭建见 `docs/v1.3.0-搭建与验收.md`，本次工程化升级见 `docs/v1.4.0-协作发布与回滚.md`。
+v1.1.0—v1.4.0 历史说明继续保留；v1.3.0 功能搭建见 `docs/v1.3.0-搭建与验收.md`，v1.4.0 工程化升级见 `docs/v1.4.0-协作发布与回滚.md`。

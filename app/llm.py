@@ -32,7 +32,8 @@ class OpenAICompatibleClient:
     def __init__(self, settings: Settings) -> None:
         if not settings.key_configured:
             raise LLMError(
-                "尚未配置 MODEL_API_KEY，请先填写项目根目录的 .env 中当前启用服务商的 Key。"
+                "尚未配置 MODEL_API_KEY。本地运行请填写项目根目录的 .env；"
+                "Vercel 部署请在项目 Settings → Environment Variables 中配置后重新部署。"
             )
         self.settings = settings
         self.client = AsyncOpenAI(

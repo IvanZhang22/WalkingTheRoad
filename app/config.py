@@ -32,10 +32,15 @@ class Settings:
     max_upload_bytes: int
     max_document_chars: int
     provider: str = "deepseek"
+    agent_api_key: str = ""
 
     @property
     def key_configured(self) -> bool:
         return bool(self.api_key.strip())
+
+    @property
+    def agent_key_configured(self) -> bool:
+        return bool(self.agent_api_key.strip())
 
 
 def get_settings() -> Settings:
@@ -89,4 +94,5 @@ def get_settings() -> Settings:
         max_upload_bytes=_positive_int("MAX_UPLOAD_MB", 20) * 1024 * 1024,
         max_document_chars=_positive_int("MAX_DOCUMENT_CHARS", 300_000),
         provider=provider,
+        agent_api_key=os.getenv("AGENT_API_KEY", ""),
     )

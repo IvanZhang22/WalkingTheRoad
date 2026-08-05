@@ -2,6 +2,36 @@
 
 所有重要变更按版本记录。本项目在当前阶段使用三段式版本号。
 
+## [2.1.0] - 2026-08-05
+
+### Added
+
+- Vercel Preview 部署、环境变量和公开健康检查；
+- 线上 `GET /v1/models`、Bearer 鉴权和真实 `POST /v1/chat/completions` 验证；
+- 显式 UTF-8 JSON 响应，修复 OpenAI 兼容入口中文输出；
+- 国内部署与清小搭接入失败的可复现记录。
+
+### Known limitations
+
+- 清小搭服务端无法访问境外 Vercel 地址，连通性检测返回 `SocketException`；
+- 本版只完成境外预览部署，不宣称已经接入或上线清小搭；
+- 标准 Chat 入口当前只完成意图识别和工作流推荐，尚未开放多模态输入。
+
+## [2.0.0] - 2026-08-05
+
+### Added
+
+- OpenAI 兼容的 `GET /v1/models` 与 `POST /v1/chat/completions`；
+- 独立 `AGENT_API_KEY` Bearer 鉴权，和模型供应商密钥完全隔离；
+- 标准非流式响应、SSE role/content/stop/[DONE] 帧与最小探测响应；
+- 协议契约测试，以及 Vercel/清小搭部署与验收说明；
+- Vercel Python Function 入口与 120 秒函数配置。
+
+### Unchanged
+
+- 四工作流、项目卡、模型提示词和业务输出未改动；
+- 尚未部署到 Vercel、接入清小搭或开放文件/音频输入。
+
 ## [1.4.0] - 2026-08-05
 
 ### Added
