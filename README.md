@@ -95,11 +95,11 @@ W3、W4 的 `7C` 节点只接受原文完全匹配或仅空白差异匹配。模
 ```text
 MODEL_PROVIDER=stepfun
 MODEL_BASE_URL=https://api.stepfun.com/step_plan/v1
-MODEL_NAME=step-router-v1
+MODEL_NAME=step-3.5-flash
 APP_MODE=live
 ```
 
-`step-router-v1` 是 Coding Plan 的智能路由模型，会在复杂请求与高频请求之间自动选择合适引擎。`.env` 下半部分保留了 DeepSeek 备用块；切换时只保留其中一组未注释的 `MODEL_*` 配置即可。
+当前已验证配置使用 `step-3.5-flash` 和 Step Plan 地址。`.env` 下半部分保留了 DeepSeek 备用块；切换时只保留其中一组未注释的 `MODEL_*` 配置即可。
 
 开发时可将 `APP_MODE=mock`，这样不会调用真实 API，也不会产生费用。模拟结果只能用于检查工程链路，不能评价 Agent 的研究能力。
 

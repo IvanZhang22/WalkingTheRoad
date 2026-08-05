@@ -303,7 +303,8 @@ function renderHealth(health) {
   } else {
     card.classList.add("error");
     title.textContent = "需要配置 API Key";
-    detail.textContent = health.configuration_error || "请填写 .env 后重启";
+    detail.textContent = health.configuration_error
+      || "本地请填写 .env；Vercel 请配置 Environment Variables 后重新部署";
   }
 }
 

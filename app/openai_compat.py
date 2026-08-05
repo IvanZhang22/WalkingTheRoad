@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import time
 from collections.abc import AsyncIterator
 from typing import Literal
@@ -62,7 +63,11 @@ def authorize_bearer(authorization: str | None, expected_key: str) -> None:
             },
         )
     token = authorization.removeprefix("Bearer ") if authorization else ""
-    if not authorization or not authorization.startswith("Bearer ") or token != expected_key:
+    if (
+        not authorization
+        or not authorization.startswith("Bearer ")
+        or not secrets.compare_digest(token, expected_key)
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={
