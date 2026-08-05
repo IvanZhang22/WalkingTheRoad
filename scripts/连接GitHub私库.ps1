@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$RepositoryUrl
+    [string]$RepositoryUrl,
+    [string]$Tag = "v2.0.0"
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,5 +22,5 @@ if ($LASTEXITCODE -eq 0) {
 }
 & $gitExe remote add origin $RepositoryUrl
 & $gitExe push -u origin main
-& $gitExe push origin v1.4.0
-Write-Host "已推送 main 和 v1.4.0 标签。请到 GitHub 检查 Actions、Release 和分支保护。" -ForegroundColor Green
+& $gitExe push origin $Tag
+Write-Host "已推送 main 和 $Tag 标签。请到 GitHub 检查 Actions、Release 和分支保护。" -ForegroundColor Green

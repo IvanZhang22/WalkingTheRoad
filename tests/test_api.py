@@ -18,6 +18,7 @@ def settings() -> Settings:
         timeout_seconds=120,
         max_upload_bytes=20 * 1024 * 1024,
         max_document_chars=300_000,
+        agent_api_key="test-agent-key",
     )
 
 

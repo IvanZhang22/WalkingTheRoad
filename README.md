@@ -1,6 +1,6 @@
-# 行小道本地 Agent v1.4.0
+# 行小道本地 Agent v2.0.0
 
-v1.4.0 保留 v1.3.0 的浏览器项目卡、人工写回确认和 W1→W4 串联，并建立 GitHub 私库协作、自动测试、安全检查、源码发布包和回滚基线。本版不改变业务工作流输出，重点是让团队可以安全地共同维护代码。
+v2.0.0 保留 v1.4.0 的协作与发布基线，并新增清小搭所需的 OpenAI 兼容接口：独立 Bearer 鉴权、`/v1/models`、`/v1/chat/completions` 与标准 SSE 流式响应。本版先完成文本协议与意图识别，不宣称已上线或支持多模态。
 
 项目卡只保存在当前浏览器，不是数据库。上传文件正文、API Key 和完整节点轨迹不会进入项目卡。
 
@@ -165,7 +165,14 @@ node --test tests\js\test_project_store.cjs
 - `GET /api/runs/{run_id}/download.md`：下载最终 Markdown；
 - `GET /docs`：FastAPI 自动生成的接口调试页。
 
-目前这些是本地开发接口。清小搭需要的 `/models`、`/chat/completions`、Bearer 鉴权和标准 SSE 留到 v2.0—v2.1。
+本地页面继续使用 `/api/*` 接口。面向清小搭的标准接口为：
+
+- `GET /v1/models`：Bearer 鉴权后的模型列表；
+- `POST /v1/chat/completions`：文本消息意图识别与工作流引导；
+- `stream: true`：返回标准 Server-Sent Events，最后依次给出 stop 帧和 `[DONE]`；
+- `max_tokens: 1`：返回最小探测响应，不调用模型。
+
+调用标准接口时使用 `AGENT_API_KEY`；模型服务使用 `MODEL_API_KEY`。两者必须不同。完整契约与部署准备见 `docs/v2.0.0-协议与验收.md` 和 `docs/v2.1.0-Vercel与清小搭接入.md`。
 
 ## 八、数据与版本边界
 
@@ -189,4 +196,4 @@ node --test tests\js\test_project_store.cjs
 
 GitHub Actions 会在 Pull Request 和 `main` 更新时自动执行完整质量门；推送与 `pyproject.toml` 一致的 `v*` 标签时，会再次验收并创建带 SHA-256 校验文件的 GitHub Release。
 
-v1.1.0—v1.3.0 历史说明继续保留；v1.3.0 功能搭建见 `docs/v1.3.0-搭建与验收.md`，本次工程化升级见 `docs/v1.4.0-协作发布与回滚.md`。
+v1.1.0—v1.4.0 历史说明继续保留；v1.3.0 功能搭建见 `docs/v1.3.0-搭建与验收.md`，v1.4.0 工程化升级见 `docs/v1.4.0-协作发布与回滚.md`。

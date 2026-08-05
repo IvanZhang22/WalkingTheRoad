@@ -3,7 +3,7 @@ $ErrorActionPreference = "Stop"
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $venvDir = Join-Path $projectDir ".venv"
 $pythonExe = Join-Path $venvDir "Scripts\python.exe"
-$installMarker = Join-Path $venvDir ".dependencies-v1.4.0"
+$installMarker = Join-Path $venvDir ".dependencies-v2.0.0"
 $envFile = Join-Path $projectDir ".env"
 $envExample = Join-Path $projectDir ".env.example"
 
