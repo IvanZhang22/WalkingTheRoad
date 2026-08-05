@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>行小道 · 本地 Agent v1.4.0</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">行</div>
+        <div>
+          <strong>行小道</strong>
+          <span>本地 Agent v1.4.0</span>
+        </div>
+      </div>
+      <div class="status-card" id="health-card">
+        <span class="status-dot"></span>
+        <div><strong id="health-title">正在检查服务</strong><small id="health-detail">请稍候</small></div>
+      </div>
+      <section class="project-switcher" aria-label="当前项目">
+        <label for="project-select">当前项目</label>
+        <select id="project-select"><option value="">临时单次模式</option></select>
+        <div class="project-switcher-actions">
+          <button id="new-project-button" type="button">新建</button>
+          <button id="open-project-button" type="button">项目卡</button>
+        </div>
+        <small id="project-storage-status">未创建项目时保持 v1.2 单次运行方式。</small>
+      </section>
+      <nav id="workflow-nav" aria-label="工作流"></nav>
+      <div class="sidebar-note">
+        <strong>当前版本边界</strong>
+        <p>项目卡只保存在当前浏览器；所有跨阶段写回和下一步推进都需要用户确认，原始附件不会写入项目卡。</p>
+      </div>
+    </aside>
+
+    <main class="main-panel">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">社会实践研究辅助</p>
+          <h1 id="page-title">选择一位研究助手</h1>
+        </div>
+        <div class="topbar-actions">
+          <button class="ghost-button" id="project-card-button" type="button">项目卡</button>
+          <button class="ghost-button" id="main-menu-button" type="button">返回主菜单</button>
+        </div>
+      </header>
+
+      <section class="chat" id="chat" aria-live="polite">
+        <article class="message assistant">
+          <div class="avatar">行</div>
+          <div class="bubble">
+            <p>你好，我是“行小道”。如果你不确定该选哪一项，可以先用一句话描述当前任务；我只会推荐入口，得到你的确认后才会打开结构化表单。</p>
+            <form class="route-form" id="route-form">
+              <label for="route-message">描述你现在要做的事</label>
+              <textarea id="route-message" name="message" maxlength="4000" required placeholder="例如：我已经整理好三份访谈记录，想做初步编码并找出共同主题。"></textarea>
+              <div class="route-actions">
+                <button class="primary-button" id="route-button" type="submit">帮我判断适合哪条工作流</button>
+                <small>不会自动运行；推荐后仍由你确认或改选。</small>
+              </div>
+              <div class="route-result" id="route-result" hidden></div>
+            </form>
+            <p class="direct-choice-label">也可以直接选择（这也是对推荐结果的人工纠正）：</p>
+            <div class="menu-grid" id="menu-grid"></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="composer" id="composer" hidden>
+        <form id="workflow-form">
+          <div class="form-heading">
+            <div>
+              <p class="eyebrow" id="form-workflow-id"></p>
+              <h2 id="form-title"></h2>
+              <p id="form-description"></p>
+            </div>
+            <span class="single-run-pill">单次仅运行一条工作流</span>
+          </div>
+          <div id="form-fields" class="form-fields"></div>
+          <div id="form-project-context" class="form-project-context" hidden></div>
+          <div class="form-actions">
+            <button class="primary-button" id="submit-button" type="submit">开始运行</button>
+            <button class="secondary-button" id="cancel-form-button" type="button">取消</button>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+  <dialog class="project-dialog" id="project-dialog">
+    <form method="dialog" class="project-dialog-shell">
+      <header class="project-dialog-head">
+        <div><p class="eyebrow">浏览器本地项目卡</p><h2 id="project-dialog-title">项目卡</h2></div>
+        <button class="icon-button" value="cancel" aria-label="关闭项目卡">×</button>
+      </header>
+      <div id="project-dialog-empty" class="project-empty">当前处于临时单次模式。新建或导入项目后，可以启用字段预填、写回确认和四工作流串联。</div>
+      <div id="project-dialog-content" hidden>
+        <section class="project-stage-section">
+          <h3>阶段状态</h3>
+          <div class="stage-grid" id="project-stage-grid"></div>
+        </section>
+        <section class="project-fields-section">
+          <h3>项目字段</h3>
+          <div class="project-fields" id="project-fields"></div>
+        </section>
+        <details class="project-details"><summary>材料、阶段成果与修订历史</summary><div id="project-details-content"></div></details>
+      </div>
+      <footer class="project-dialog-actions">
+        <button class="primary-button" id="save-project-button" type="button">保存项目卡修改</button>
+        <button class="secondary-button" id="rename-project-button" type="button">重命名</button>
+        <button class="secondary-button" id="export-project-button" type="button">导出 JSON</button>
+        <button class="secondary-button" id="import-project-button" type="button">导入 JSON</button>
+        <button class="danger-button" id="delete-project-button" type="button">删除项目</button>
+        <input id="import-project-file" type="file" accept="application/json,.json" hidden>
+      </footer>
+    </form>
+  </dialog>
+  <script src="/static/project-store.js"></script>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

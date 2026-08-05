@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xingxiaodao-agent"
+version = "1.4.0"
+description = "行小道：面向大学生社会实践的社科研究辅助 Agent"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.116,<1",
+  "uvicorn[standard]>=0.35,<1",
+  "openai>=1.109,<2",
+  "pydantic>=2.12,<3",
+  "python-dotenv>=1.1,<2",
+  "python-multipart>=0.0.20,<1",
+  "python-docx>=1.2,<2",
+  "pypdf>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28,<1",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+  "ruff>=0.12,<1",
+  "mypy>=1.17,<2",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/run_regression.py" = ["E402"]
+"scripts/run_routing_regression.py" = ["E402"]
+"scripts/run_project_regression.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
