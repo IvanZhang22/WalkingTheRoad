@@ -25,7 +25,7 @@ async def main(live: bool) -> int:
     llm = OpenAICompatibleClient(settings) if live else MockLLMClient()
     mode = "live" if live else "mock"
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    result_dir = PROJECT_ROOT / "test-results" / mode / f"v2.0.0-routing-{stamp}"
+    result_dir = PROJECT_ROOT / "test-results" / mode / f"v2.1.0-routing-{stamp}"
     result_dir.mkdir(parents=True, exist_ok=False)
     cases = json.loads(CASES_PATH.read_text(encoding="utf-8"))
     rows: list[dict[str, object]] = []
@@ -78,7 +78,7 @@ async def main(live: bool) -> int:
         for category in sorted({str(row["category"]) for row in rows})
     }
     summary = {
-        "version": "2.0.0",
+        "version": "2.1.0",
         "mode": mode,
         "total": len(rows),
         "passed": passed_count,
@@ -103,7 +103,7 @@ async def main(live: bool) -> int:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="运行行小道 v2.0.0 意图路由回归测试")
+    parser = argparse.ArgumentParser(description="运行行小道 v2.1.0 意图路由回归测试")
     parser.add_argument(
         "--live",
         action="store_true",
