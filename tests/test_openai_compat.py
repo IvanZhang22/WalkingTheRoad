@@ -35,6 +35,7 @@ def test_models_requires_separate_agent_key() -> None:
 
         response = client.get("/v1/models", headers=headers())
         assert response.status_code == 200
+        assert response.headers["content-type"].startswith("application/json; charset=utf-8")
         assert response.json()["object"] == "list"
         assert response.json()["data"][0]["id"] == "xingxiaodao-agent"
 

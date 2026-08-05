@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
@@ -29,6 +29,12 @@ from app.workflows import WorkflowService, workflow_specs_json
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
+class Utf8JSONResponse(JSONResponse):
+    """Explicit UTF-8 JSON for legacy HTTP clients."""
+
+    media_type = "application/json; charset=utf-8"
+
+
 def _make_llm(settings: Settings) -> LLMClient:
     if settings.app_mode == "mock":
         return MockLLMClient()
@@ -47,6 +53,7 @@ def create_app(*, settings: Settings | None = None, llm: LLMClient | None = None
             llm_error = str(exc)
 
     app = FastAPI(
+        default_response_class=Utf8JSONResponse,
         title="行小道本地 Agent",
         version="2.0.0",
         description="四工作流全代码版：OpenAI 兼容协议、项目卡串联与协作发布基线",

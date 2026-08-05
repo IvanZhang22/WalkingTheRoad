@@ -25,7 +25,7 @@ WORKFLOW_NAMES = {
 
 
 class ChatMessage(BaseModel):
-    """v2.0 只支持标准字符串 content；附件 content part 留给 v2.2。"""
+    """v2.0 仅支持标准字符串 content；附件 content part 留给 v2.2。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -49,7 +49,7 @@ class ChatCompletionRequest(BaseModel):
 
 
 def authorize_bearer(authorization: str | None, expected_key: str) -> None:
-    """使用恒等失败提示，避免泄露到底是缺密钥还是密钥不正确。"""
+    """使用恒定时间比较，避免泄露密钥错误的细节。"""
 
     if not expected_key:
         raise HTTPException(
@@ -98,7 +98,7 @@ def latest_user_message(messages: list[ChatMessage]) -> str:
 
 def format_route_reply(route: IntentRouteResult) -> str:
     if route.recommended_workflow == "uncertain":
-        missing = "；".join(route.missing_information) or "你希望完成的研究任务"
+        missing = "、".join(route.missing_information) or "你希望完成的研究任务"
         return (
             "我还不能可靠地替你选择工作流。\n\n"
             f"请补充：{missing}。\n\n"
@@ -106,7 +106,7 @@ def format_route_reply(route: IntentRouteResult) -> str:
         )
     workflow_id = route.recommended_workflow
     workflow_name = WORKFLOW_NAMES[workflow_id]
-    missing = "；".join(route.missing_information)
+    missing = "、".join(route.missing_information)
     response = f"我建议进入 **{workflow_name}**。\n\n判断依据：{route.reason}"
     if missing:
         response += f"\n\n开始前建议补充：{missing}。"
