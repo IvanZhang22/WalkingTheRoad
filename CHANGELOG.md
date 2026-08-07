@@ -2,6 +2,25 @@
 
 所有重要变更按版本记录。本项目在当前阶段使用三段式版本号。
 
+## [Unreleased]
+
+### Added
+
+- v2.2 多模态 `text`、`input_audio`、`file` 消息契约；
+- 厂商无关的 ASR、OCR、文档解析接口和统一材料/片段模型；
+- 无密钥 Mock Provider、多附件故障隔离及低置信/定位缺失门控；
+- 同一 `/v1/chat/completions` 的多模态预检摘要，不回显附件 URL 或材料全文。
+
+### Security
+
+- 拒绝 data URL、本地路径、显式内网/元数据 IP、URL 凭据和路径穿越文件名；
+- Live 环境没有真实 Provider 时失败关闭，不使用 Mock 内容冒充真实识别。
+
+### Known limitations
+
+- 本阶段只有请求契约和 Mock，尚未接入远程下载、阶跃 ASR、真实 OCR 或 W3 正式分析；
+- 视频不在 v2.2 范围内。
+
 ## [2.1.0] - 2026-08-05
 
 ### Added

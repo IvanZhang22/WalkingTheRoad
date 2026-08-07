@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 from fastapi.testclient import TestClient
 
@@ -94,9 +95,120 @@ def test_probe_and_input_contract() -> None:
         assert probe.status_code == 200
         assert probe.json()["choices"][0]["message"]["content"] == "行小道服务正常。"
 
-        invalid = client.post(
+        content_parts = client.post(
             "/v1/chat/completions",
             headers=headers(),
             json={"messages": [{"role": "user", "content": [{"type": "text", "text": "测试"}]}]},
         )
-        assert invalid.status_code == 422
+        assert content_parts.status_code == 200
+
+
+def test_mock_multimodal_parts_use_same_chat_endpoint_without_echoing_url() -> None:
+    signed_url = "https://files.example.org/interview.mp3?token=must-not-echo"
+    with TestClient(create_app(settings=settings(), llm=MockLLMClient())) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers=headers(),
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "请进入质性材料分析并提取主题"},
+                            {
+                                "type": "input_audio",
+                                "input_audio": {"url": signed_url, "format": "mp3"},
+                            },
+                            {
+                                "type": "file",
+                                "file": {
+                                    "url": "https://files.example.org/note.docx",
+                                    "filename": "观察笔记.docx",
+                                },
+                            },
+                        ],
+                    }
+                ]
+            },
+        )
+        assert response.status_code == 200
+        content = response.json()["choices"][0]["message"]["content"]
+        assert "W3 质性材料分析" in content
+        assert "共 2 份" in content
+        assert "自动可用 2 份" in content
+        assert "MAT_" in content
+        assert signed_url not in content
+        assert "must-not-echo" not in content
+
+
+def test_live_multimodal_contract_fails_closed_without_provider() -> None:
+    live_settings = replace(settings(), app_mode="live")
+    with TestClient(create_app(settings=live_settings, llm=MockLLMClient())) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers=headers(),
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_audio",
+                                "input_audio": {
+                                    "url": "https://files.example.org/interview.wav",
+                                    "format": "wav",
+                                },
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+        assert response.status_code == 503
+        assert response.json()["detail"]["error"]["code"] == (
+            "multimodal_provider_not_configured"
+        )
+
+
+def test_multimodal_contract_rejects_data_url_and_unsupported_type() -> None:
+    with TestClient(create_app(settings=settings(), llm=MockLLMClient())) as client:
+        data_url = client.post(
+            "/v1/chat/completions",
+            headers=headers(),
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_audio",
+                                "input_audio": {
+                                    "url": "data:audio/wav;base64,AAAA",
+                                    "format": "wav",
+                                },
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+        assert data_url.status_code == 422
+
+        video = client.post(
+            "/v1/chat/completions",
+            headers=headers(),
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_video",
+                                "input_video": {"url": "https://files.example.org/demo.mp4"},
+                            }
+                        ],
+                    }
+                ]
+            },
+        )
+        assert video.status_code == 422

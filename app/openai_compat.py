@@ -9,10 +9,19 @@ from typing import Literal
 from uuid import uuid4
 
 from fastapi import HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.llm import LLMClient
 from app.models import IntentRouteResult
+from app.multimodal.contracts import (
+    ChatContent,
+    FileContentPart,
+    InputAudioContentPart,
+    attachment_parts,
+    text_from_content,
+    validate_attachment_count,
+)
+from app.multimodal.service import MaterialIngestService, format_material_summary
 from app.routing import IntentRouter
 
 PUBLIC_MODEL_ID = "xingxiaodao-agent"
@@ -25,12 +34,19 @@ WORKFLOW_NAMES = {
 
 
 class ChatMessage(BaseModel):
-    """v2.0 仅支持标准字符串 content；附件 content part 留给 v2.2。"""
+    """兼容纯文本，并允许 user 消息携带 v2.2 content part。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     role: Literal["system", "user", "assistant"]
-    content: str = Field(min_length=1, max_length=20_000)
+    content: ChatContent
+
+    @model_validator(mode="after")
+    def attachment_role_and_count(self) -> ChatMessage:
+        validate_attachment_count(self.content)
+        if self.role != "user" and attachment_parts(self.content):
+            raise ValueError("只有 user 消息可以包含附件")
+        return self
 
 
 class ChatCompletionRequest(BaseModel):
@@ -80,10 +96,16 @@ def authorize_bearer(authorization: str | None, expected_key: str) -> None:
         )
 
 
-def latest_user_message(messages: list[ChatMessage]) -> str:
+def latest_user_input(
+    messages: list[ChatMessage],
+) -> tuple[str, list[InputAudioContentPart | FileContentPart]]:
     for message in reversed(messages):
         if message.role == "user":
-            return message.content
+            text = text_from_content(message.content)
+            attachments = attachment_parts(message.content)
+            if not text and attachments:
+                text = "请分析这些研究材料，并进入质性材料分析流程。"
+            return text, attachments
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail={
@@ -94,6 +116,12 @@ def latest_user_message(messages: list[ChatMessage]) -> str:
             }
         },
     )
+
+
+def latest_user_message(messages: list[ChatMessage]) -> str:
+    """保留 v2.0 调用点；只返回最新 user 消息中的文本。"""
+
+    return latest_user_input(messages)[0]
 
 
 def format_route_reply(route: IntentRouteResult) -> str:
@@ -117,12 +145,29 @@ def format_route_reply(route: IntentRouteResult) -> str:
 async def build_reply(
     llm: LLMClient,
     request: ChatCompletionRequest,
+    material_ingestor: MaterialIngestService | None = None,
 ) -> tuple[str, IntentRouteResult | None]:
     if request.max_tokens == 1:
         return "行小道服务正常。", None
-    message = latest_user_message(request.messages)
+    message, attachments = latest_user_input(request.messages)
+    if attachments and material_ingestor is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "error": {
+                    "message": "多模态输入契约已启用，但当前环境尚未配置真实材料 Provider。",
+                    "type": "server_configuration_error",
+                    "code": "multimodal_provider_not_configured",
+                }
+            },
+        )
     route = await IntentRouter(llm).route(message)
-    return format_route_reply(route), route
+    reply = format_route_reply(route)
+    if attachments:
+        assert material_ingestor is not None
+        materials = await material_ingestor.ingest(attachments)
+        reply += f"\n\n{format_material_summary(materials)}"
+    return reply, route
 
 
 def completion_payload(content: str, *, completion_id: str, created: int) -> dict[str, object]:
