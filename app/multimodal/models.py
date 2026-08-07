@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -65,8 +66,21 @@ class ProviderResult(BaseModel):
 
     provider_name: str = Field(min_length=1, max_length=100)
     provider_model: str = Field(min_length=1, max_length=200)
+    normalized_text: str | None = Field(default=None, max_length=300_000)
     segments: list[ProviderSegment] = Field(default_factory=list, max_length=10_000)
     warnings: list[str] = Field(default_factory=list, max_length=100)
+
+
+class DownloadedFile(BaseModel):
+    """临时文件只在单次接入中存在；path 永不进入公开序列化。"""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    path: Path = Field(exclude=True, repr=False)
+    filename: str = Field(min_length=1, max_length=300)
+    mime_type: str = Field(min_length=1, max_length=200)
+    size_bytes: int = Field(ge=0)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class MaterialSegment(BaseModel):
