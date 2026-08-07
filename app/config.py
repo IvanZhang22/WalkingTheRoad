@@ -54,6 +54,12 @@ class Settings:
     stepfun_asr_request_timeout_seconds: int = 30
     stepfun_asr_poll_timeout_seconds: int = 300
     stepfun_asr_poll_interval_seconds: int = 2
+    deepgram_api_key: str = ""
+    deepgram_base_url: str = "https://api.deepgram.com"
+    deepgram_model: str = "nova-3"
+    deepgram_language: str = "zh-CN"
+    deepgram_diarize_model: str = "latest"
+    deepgram_timeout_seconds: int = 120
     ocr_provider: str = "disabled"
     baidu_ocr_api_key: str = ""
     baidu_ocr_secret_key: str = ""
@@ -73,6 +79,18 @@ class Settings:
     @property
     def stepfun_asr_key_configured(self) -> bool:
         return bool(self.stepfun_asr_api_key.strip())
+
+    @property
+    def deepgram_key_configured(self) -> bool:
+        return bool(self.deepgram_api_key.strip())
+
+    @property
+    def asr_key_configured(self) -> bool:
+        if self.asr_provider == "stepfun":
+            return self.stepfun_asr_key_configured
+        if self.asr_provider == "deepgram":
+            return self.deepgram_key_configured
+        return False
 
     @property
     def baidu_ocr_key_configured(self) -> bool:
@@ -95,8 +113,8 @@ def get_settings() -> Settings:
         raise ValueError("APP_MODE 只能是 live 或 mock")
 
     asr_provider = os.getenv("ASR_PROVIDER", "disabled").strip().lower()
-    if asr_provider not in {"disabled", "stepfun"}:
-        raise ValueError("ASR_PROVIDER 只能是 disabled 或 stepfun")
+    if asr_provider not in {"disabled", "stepfun", "deepgram"}:
+        raise ValueError("ASR_PROVIDER 只能是 disabled、stepfun 或 deepgram")
 
     ocr_provider = os.getenv("OCR_PROVIDER", "disabled").strip().lower()
     if ocr_provider not in {"disabled", "baidu"}:
@@ -156,6 +174,12 @@ def get_settings() -> Settings:
         ),
         stepfun_asr_poll_timeout_seconds=_positive_int("STEPFUN_ASR_POLL_TIMEOUT_SECONDS", 300),
         stepfun_asr_poll_interval_seconds=_non_negative_int("STEPFUN_ASR_POLL_INTERVAL_SECONDS", 2),
+        deepgram_api_key=os.getenv("DEEPGRAM_API_KEY", ""),
+        deepgram_base_url=os.getenv("DEEPGRAM_BASE_URL", "https://api.deepgram.com").rstrip("/"),
+        deepgram_model=os.getenv("DEEPGRAM_MODEL", "nova-3"),
+        deepgram_language=os.getenv("DEEPGRAM_LANGUAGE", "zh-CN"),
+        deepgram_diarize_model=os.getenv("DEEPGRAM_DIARIZE_MODEL", "latest"),
+        deepgram_timeout_seconds=_positive_int("DEEPGRAM_TIMEOUT_SECONDS", 120),
         ocr_provider=ocr_provider,
         baidu_ocr_api_key=os.getenv("BAIDU_OCR_API_KEY", ""),
         baidu_ocr_secret_key=os.getenv("BAIDU_OCR_SECRET_KEY", ""),

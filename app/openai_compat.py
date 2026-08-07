@@ -12,7 +12,7 @@ from fastapi import HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.llm import LLMClient
-from app.models import IntentRouteResult
+from app.models import IntentRouteResult, RouteConfidence, WorkflowId
 from app.multimodal.contracts import (
     ChatContent,
     FileContentPart,
@@ -171,7 +171,16 @@ async def build_reply(
     if attachments:
         assert material_ingestor is not None
         materials = await material_ingestor.ingest(attachments)
-    route = await IntentRouter(llm).route(message)
+    route = (
+        IntentRouteResult(
+            recommended_workflow=WorkflowId.w3,
+            reason="当前消息携带待分析材料，按 v2.2 多模态闭环进入质性材料分析。",
+            missing_information=[],
+            confidence=RouteConfidence.high,
+        )
+        if attachments
+        else await IntentRouter(llm).route(message)
+    )
     reply = format_route_reply(route)
     if materials is not None:
         summary = format_material_summary(materials)

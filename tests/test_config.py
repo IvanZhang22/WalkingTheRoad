@@ -37,6 +37,16 @@ def test_rejects_unknown_asr_provider(monkeypatch: pytest.MonkeyPatch) -> None:
         get_settings()
 
 
+def test_deepgram_is_a_supported_independent_asr_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ASR_PROVIDER", "deepgram")
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "deepgram-test-key")
+    settings = get_settings()
+    assert settings.deepgram_key_configured is True
+    assert settings.asr_key_configured is True
+
+
 def test_baidu_ocr_requires_both_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OCR_PROVIDER", "baidu")
     monkeypatch.setenv("BAIDU_OCR_API_KEY", "test-ak")

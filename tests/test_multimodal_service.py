@@ -13,6 +13,7 @@ from app.multimodal.models import (
 )
 from app.multimodal.providers.baidu_ocr import BaiduOCRProvider
 from app.multimodal.providers.base import ASRProvider, DocumentParser, OCRProvider
+from app.multimodal.providers.deepgram_asr import DeepgramASRProvider
 from app.multimodal.providers.mock import MockDocumentParser, MockOCRProvider
 from app.multimodal.providers.stepfun_asr import StepFunASRProvider
 from app.multimodal.providers.unavailable import UnavailableASRProvider, UnavailableOCRProvider
@@ -175,6 +176,26 @@ def test_live_service_only_enables_audio_when_real_key_is_configured() -> None:
         {MaterialModality.audio, MaterialModality.document}
     )
     assert isinstance(enabled.asr, StepFunASRProvider)
+
+
+def test_live_service_can_select_deepgram_for_confident_audio() -> None:
+    service = build_live_ingest_service(
+        max_upload_bytes=1024,
+        max_document_chars=1000,
+        connect_timeout=1,
+        read_timeout=1,
+        max_redirects=0,
+        asr_provider="deepgram",
+        stepfun_asr_api_key="",
+        stepfun_asr_base_url="https://api.stepfun.com/v1",
+        stepfun_asr_model="step-asr-1.1",
+        stepfun_asr_request_timeout=1,
+        stepfun_asr_poll_timeout=1,
+        stepfun_asr_poll_interval=0,
+        deepgram_api_key="test-key",
+    )
+    assert MaterialModality.audio in service.enabled_modalities
+    assert isinstance(service.asr, DeepgramASRProvider)
 
 
 def test_live_service_only_enables_ocr_when_both_credentials_are_configured() -> None:

@@ -26,6 +26,7 @@ from app.multimodal.models import (
 )
 from app.multimodal.providers.baidu_ocr import BaiduOCRProvider
 from app.multimodal.providers.base import ASRProvider, DocumentParser, OCRProvider
+from app.multimodal.providers.deepgram_asr import DeepgramASRProvider
 from app.multimodal.providers.document import LocalDocumentParser
 from app.multimodal.providers.mock import MockASRProvider, MockDocumentParser, MockOCRProvider
 from app.multimodal.providers.stepfun_asr import StepFunASRProvider
@@ -288,6 +289,12 @@ def build_live_ingest_service(
     stepfun_asr_request_timeout: float,
     stepfun_asr_poll_timeout: float,
     stepfun_asr_poll_interval: float,
+    deepgram_api_key: str = "",
+    deepgram_base_url: str = "https://api.deepgram.com",
+    deepgram_model: str = "nova-3",
+    deepgram_language: str = "zh-CN",
+    deepgram_diarize_model: str = "latest",
+    deepgram_timeout: float = 120,
     ocr_provider: str = "disabled",
     baidu_ocr_api_key: str = "",
     baidu_ocr_secret_key: str = "",
@@ -308,6 +315,16 @@ def build_live_ingest_service(
             request_timeout=stepfun_asr_request_timeout,
             poll_timeout=stepfun_asr_poll_timeout,
             poll_interval=stepfun_asr_poll_interval,
+        )
+        enabled_modalities.add(MaterialModality.audio)
+    elif asr_provider == "deepgram" and deepgram_api_key.strip():
+        asr = DeepgramASRProvider(
+            api_key=deepgram_api_key,
+            base_url=deepgram_base_url,
+            model=deepgram_model,
+            language=deepgram_language,
+            diarize_model=deepgram_diarize_model,
+            timeout=deepgram_timeout,
         )
         enabled_modalities.add(MaterialModality.audio)
 

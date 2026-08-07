@@ -25,7 +25,7 @@ async def main(live: bool) -> int:
     llm = OpenAICompatibleClient(settings) if live else MockLLMClient()
     mode = "live" if live else "mock"
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    result_dir = PROJECT_ROOT / "test-results" / mode / f"v2.1.0-{stamp}"
+    result_dir = PROJECT_ROOT / "test-results" / mode / f"v2.2.0-{stamp}"
     result_dir.mkdir(parents=True, exist_ok=False)
     cases = json.loads((FIXTURE_ROOT / "regression_cases.json").read_text(encoding="utf-8"))
 
@@ -83,7 +83,7 @@ async def main(live: bool) -> int:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="运行行小道 v2.1.0 的既有四工作流回归测试")
+    parser = argparse.ArgumentParser(description="运行行小道 v2.2.0 的既有四工作流回归测试")
     parser.add_argument(
         "--live",
         action="store_true",

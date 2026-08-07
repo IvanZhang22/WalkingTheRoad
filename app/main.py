@@ -65,7 +65,7 @@ def create_app(
     app = FastAPI(
         default_response_class=Utf8JSONResponse,
         title="行小道本地 Agent",
-        version="2.1.0",
+        version="2.2.0",
         description="四工作流全代码版：OpenAI 兼容协议、项目卡串联与协作发布基线",
     )
     app.state.settings = active_settings
@@ -95,6 +95,12 @@ def create_app(
             stepfun_asr_request_timeout=(active_settings.stepfun_asr_request_timeout_seconds),
             stepfun_asr_poll_timeout=active_settings.stepfun_asr_poll_timeout_seconds,
             stepfun_asr_poll_interval=(active_settings.stepfun_asr_poll_interval_seconds),
+            deepgram_api_key=active_settings.deepgram_api_key,
+            deepgram_base_url=active_settings.deepgram_base_url,
+            deepgram_model=active_settings.deepgram_model,
+            deepgram_language=active_settings.deepgram_language,
+            deepgram_diarize_model=active_settings.deepgram_diarize_model,
+            deepgram_timeout=active_settings.deepgram_timeout_seconds,
             ocr_provider=active_settings.ocr_provider,
             baidu_ocr_api_key=active_settings.baidu_ocr_api_key,
             baidu_ocr_secret_key=active_settings.baidu_ocr_secret_key,
@@ -116,7 +122,7 @@ def create_app(
     async def health() -> dict[str, Any]:
         return {
             "status": "ok" if app.state.llm is not None else "configuration_required",
-            "version": "2.1.0",
+            "version": "2.2.0",
             "app_mode": active_settings.app_mode,
             "provider": active_settings.provider,
             "model": active_settings.model,
@@ -126,7 +132,7 @@ def create_app(
             "multimodal_contract_enabled": True,
             "multimodal_provider": app.state.multimodal_provider,
             "asr_provider": active_settings.asr_provider,
-            "asr_key_configured": active_settings.stepfun_asr_key_configured,
+            "asr_key_configured": active_settings.asr_key_configured,
             "ocr_provider": active_settings.ocr_provider,
             "ocr_key_configured": active_settings.baidu_ocr_key_configured,
             "configuration_error": app.state.llm_error,
@@ -279,7 +285,7 @@ def create_app(
 
     @app.get("/api/project")
     async def project_info() -> dict[str, str]:
-        return {"project_root": str(PROJECT_ROOT), "version": "2.1.0"}
+        return {"project_root": str(PROJECT_ROOT), "version": "2.2.0"}
 
     return app
 
