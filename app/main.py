@@ -92,6 +92,13 @@ def create_app(
             stepfun_asr_request_timeout=(active_settings.stepfun_asr_request_timeout_seconds),
             stepfun_asr_poll_timeout=active_settings.stepfun_asr_poll_timeout_seconds,
             stepfun_asr_poll_interval=(active_settings.stepfun_asr_poll_interval_seconds),
+            ocr_provider=active_settings.ocr_provider,
+            baidu_ocr_api_key=active_settings.baidu_ocr_api_key,
+            baidu_ocr_secret_key=active_settings.baidu_ocr_secret_key,
+            baidu_ocr_base_url=active_settings.baidu_ocr_base_url,
+            baidu_ocr_endpoint_path=active_settings.baidu_ocr_endpoint_path,
+            baidu_ocr_timeout=active_settings.baidu_ocr_timeout_seconds,
+            baidu_ocr_max_pages=active_settings.baidu_ocr_max_pages,
         )
     app.state.multimodal_provider = multimodal_provider
     app.state.tasks = set()
@@ -117,6 +124,8 @@ def create_app(
             "multimodal_provider": app.state.multimodal_provider,
             "asr_provider": active_settings.asr_provider,
             "asr_key_configured": active_settings.stepfun_asr_key_configured,
+            "ocr_provider": active_settings.ocr_provider,
+            "ocr_key_configured": active_settings.baidu_ocr_key_configured,
             "configuration_error": app.state.llm_error,
         }
 

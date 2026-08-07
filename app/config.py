@@ -54,6 +54,13 @@ class Settings:
     stepfun_asr_request_timeout_seconds: int = 30
     stepfun_asr_poll_timeout_seconds: int = 300
     stepfun_asr_poll_interval_seconds: int = 2
+    ocr_provider: str = "disabled"
+    baidu_ocr_api_key: str = ""
+    baidu_ocr_secret_key: str = ""
+    baidu_ocr_base_url: str = "https://aip.baidubce.com"
+    baidu_ocr_endpoint_path: str = "/rest/2.0/ocr/v1/general"
+    baidu_ocr_timeout_seconds: int = 60
+    baidu_ocr_max_pages: int = 20
 
     @property
     def key_configured(self) -> bool:
@@ -66,6 +73,10 @@ class Settings:
     @property
     def stepfun_asr_key_configured(self) -> bool:
         return bool(self.stepfun_asr_api_key.strip())
+
+    @property
+    def baidu_ocr_key_configured(self) -> bool:
+        return bool(self.baidu_ocr_api_key.strip() and self.baidu_ocr_secret_key.strip())
 
 
 def get_settings() -> Settings:
@@ -86,6 +97,10 @@ def get_settings() -> Settings:
     asr_provider = os.getenv("ASR_PROVIDER", "disabled").strip().lower()
     if asr_provider not in {"disabled", "stepfun"}:
         raise ValueError("ASR_PROVIDER 只能是 disabled 或 stepfun")
+
+    ocr_provider = os.getenv("OCR_PROVIDER", "disabled").strip().lower()
+    if ocr_provider not in {"disabled", "baidu"}:
+        raise ValueError("OCR_PROVIDER 只能是 disabled 或 baidu")
 
     defaults = {
         "stepfun": {
@@ -141,4 +156,11 @@ def get_settings() -> Settings:
         ),
         stepfun_asr_poll_timeout_seconds=_positive_int("STEPFUN_ASR_POLL_TIMEOUT_SECONDS", 300),
         stepfun_asr_poll_interval_seconds=_non_negative_int("STEPFUN_ASR_POLL_INTERVAL_SECONDS", 2),
+        ocr_provider=ocr_provider,
+        baidu_ocr_api_key=os.getenv("BAIDU_OCR_API_KEY", ""),
+        baidu_ocr_secret_key=os.getenv("BAIDU_OCR_SECRET_KEY", ""),
+        baidu_ocr_base_url=os.getenv("BAIDU_OCR_BASE_URL", "https://aip.baidubce.com").rstrip("/"),
+        baidu_ocr_endpoint_path=os.getenv("BAIDU_OCR_ENDPOINT_PATH", "/rest/2.0/ocr/v1/general"),
+        baidu_ocr_timeout_seconds=_positive_int("BAIDU_OCR_TIMEOUT_SECONDS", 60),
+        baidu_ocr_max_pages=_positive_int("BAIDU_OCR_MAX_PAGES", 20),
     )

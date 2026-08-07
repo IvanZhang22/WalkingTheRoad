@@ -35,3 +35,19 @@ def test_rejects_unknown_asr_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ASR_PROVIDER", "unknown")
     with pytest.raises(ValueError, match="ASR_PROVIDER"):
         get_settings()
+
+
+def test_baidu_ocr_requires_both_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OCR_PROVIDER", "baidu")
+    monkeypatch.setenv("BAIDU_OCR_API_KEY", "test-ak")
+    monkeypatch.setenv("BAIDU_OCR_SECRET_KEY", "")
+    assert get_settings().baidu_ocr_key_configured is False
+
+    monkeypatch.setenv("BAIDU_OCR_SECRET_KEY", "test-sk")
+    assert get_settings().baidu_ocr_key_configured is True
+
+
+def test_rejects_unknown_ocr_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OCR_PROVIDER", "unknown")
+    with pytest.raises(ValueError, match="OCR_PROVIDER"):
+        get_settings()

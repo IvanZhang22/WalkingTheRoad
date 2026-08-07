@@ -24,6 +24,7 @@ from app.multimodal.models import (
     ProviderResult,
     ProviderSegment,
 )
+from app.multimodal.providers.baidu_ocr import BaiduOCRProvider
 from app.multimodal.providers.base import ASRProvider, DocumentParser, OCRProvider
 from app.multimodal.providers.document import LocalDocumentParser
 from app.multimodal.providers.mock import MockASRProvider, MockDocumentParser, MockOCRProvider
@@ -110,7 +111,12 @@ class MaterialIngestService:
             return await self.asr.transcribe(downloaded)
         if modality is MaterialModality.image:
             return await self.ocr.recognize(downloaded)
-        return await self.document_parser.parse(downloaded)
+        try:
+            return await self.document_parser.parse(downloaded)
+        except MaterialIngestError as exc:
+            if exc.code != "XDW-DOC-OCR-REQUIRED":
+                raise
+            return await self.ocr.recognize(downloaded)
 
     def _normalize_result(
         self,
@@ -282,6 +288,13 @@ def build_live_ingest_service(
     stepfun_asr_request_timeout: float,
     stepfun_asr_poll_timeout: float,
     stepfun_asr_poll_interval: float,
+    ocr_provider: str = "disabled",
+    baidu_ocr_api_key: str = "",
+    baidu_ocr_secret_key: str = "",
+    baidu_ocr_base_url: str = "https://aip.baidubce.com",
+    baidu_ocr_endpoint_path: str = "/rest/2.0/ocr/v1/general",
+    baidu_ocr_timeout: float = 60,
+    baidu_ocr_max_pages: int = 20,
 ) -> MaterialIngestService:
     """按显式环境变量启用真实 Provider；未配置能力继续失败关闭。"""
 
@@ -298,6 +311,18 @@ def build_live_ingest_service(
         )
         enabled_modalities.add(MaterialModality.audio)
 
+    ocr: OCRProvider = UnavailableOCRProvider()
+    if ocr_provider == "baidu" and baidu_ocr_api_key.strip() and baidu_ocr_secret_key.strip():
+        ocr = BaiduOCRProvider(
+            api_key=baidu_ocr_api_key,
+            secret_key=baidu_ocr_secret_key,
+            base_url=baidu_ocr_base_url,
+            endpoint_path=baidu_ocr_endpoint_path,
+            timeout=baidu_ocr_timeout,
+            max_pages=baidu_ocr_max_pages,
+        )
+        enabled_modalities.add(MaterialModality.image)
+
     return MaterialIngestService(
         downloader=SafeDownloader(
             max_bytes=max_upload_bytes,
@@ -306,7 +331,7 @@ def build_live_ingest_service(
             max_redirects=max_redirects,
         ),
         asr=asr,
-        ocr=UnavailableOCRProvider(),
+        ocr=ocr,
         document_parser=LocalDocumentParser(max_document_chars=max_document_chars),
         enabled_modalities=frozenset(enabled_modalities),
     )
