@@ -8,6 +8,11 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.llm import MockLLMClient
 from app.main import create_app
+from app.multimodal.downloader import MockDownloader
+from app.multimodal.models import MaterialModality
+from app.multimodal.providers.document import LocalDocumentParser
+from app.multimodal.providers.mock import MockASRProvider, MockOCRProvider
+from app.multimodal.service import MaterialIngestService
 
 
 def settings() -> Settings:
@@ -141,7 +146,7 @@ def test_mock_multimodal_parts_use_same_chat_endpoint_without_echoing_url() -> N
         assert "must-not-echo" not in content
 
 
-def test_live_multimodal_contract_fails_closed_without_provider() -> None:
+def test_live_audio_fails_per_material_without_calling_unconfigured_provider() -> None:
     live_settings = replace(settings(), app_mode="live")
     with TestClient(create_app(settings=live_settings, llm=MockLLMClient())) as client:
         response = client.post(
@@ -164,10 +169,52 @@ def test_live_multimodal_contract_fails_closed_without_provider() -> None:
                 ]
             },
         )
-        assert response.status_code == 503
-        assert response.json()["detail"]["error"]["code"] == (
-            "multimodal_provider_not_configured"
+        assert response.status_code == 200
+        content = response.json()["choices"][0]["message"]["content"]
+        assert "失败 1 份" in content
+        assert "interview.wav" in content
+
+
+def test_live_document_can_use_real_parser_through_same_chat_endpoint() -> None:
+    service = MaterialIngestService(
+        downloader=MockDownloader(),
+        asr=MockASRProvider(),
+        ocr=MockOCRProvider(),
+        document_parser=LocalDocumentParser(max_document_chars=1000),
+        enabled_modalities=frozenset({MaterialModality.document}),
+    )
+    with TestClient(
+        create_app(
+            settings=replace(settings(), app_mode="live"),
+            llm=MockLLMClient(),
+            material_ingestor=service,
         )
+    ) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            headers=headers(),
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "请进入质性材料分析"},
+                            {
+                                "type": "file",
+                                "file": {
+                                    "url": "https://files.example.org/material.txt",
+                                    "filename": "material.txt",
+                                },
+                            },
+                        ],
+                    }
+                ]
+            },
+        )
+        assert response.status_code == 200
+        content = response.json()["choices"][0]["message"]["content"]
+        assert "自动可用 1 份" in content
+        assert "material.txt" in content
 
 
 def test_multimodal_contract_rejects_data_url_and_unsupported_type() -> None:

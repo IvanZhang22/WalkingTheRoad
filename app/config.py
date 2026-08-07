@@ -21,6 +21,17 @@ def _positive_int(name: str, default: int) -> int:
     return value
 
 
+def _non_negative_int(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"环境变量 {name} 必须是整数，当前值为 {raw!r}") from exc
+    if value < 0:
+        raise ValueError(f"环境变量 {name} 不得小于 0")
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     api_key: str
@@ -33,6 +44,9 @@ class Settings:
     max_document_chars: int
     provider: str = "deepseek"
     agent_api_key: str = ""
+    multimodal_connect_timeout_seconds: int = 10
+    multimodal_read_timeout_seconds: int = 120
+    multimodal_max_redirects: int = 3
 
     @property
     def key_configured(self) -> bool:
@@ -95,4 +109,9 @@ def get_settings() -> Settings:
         max_document_chars=_positive_int("MAX_DOCUMENT_CHARS", 300_000),
         provider=provider,
         agent_api_key=os.getenv("AGENT_API_KEY", ""),
+        multimodal_connect_timeout_seconds=_positive_int(
+            "MULTIMODAL_CONNECT_TIMEOUT_SECONDS", 10
+        ),
+        multimodal_read_timeout_seconds=_positive_int("MULTIMODAL_READ_TIMEOUT_SECONDS", 120),
+        multimodal_max_redirects=_non_negative_int("MULTIMODAL_MAX_REDIRECTS", 3),
     )

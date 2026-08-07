@@ -161,11 +161,13 @@ async def build_reply(
                 }
             },
         )
-    route = await IntentRouter(llm).route(message)
-    reply = format_route_reply(route)
+    materials = None
     if attachments:
         assert material_ingestor is not None
         materials = await material_ingestor.ingest(attachments)
+    route = await IntentRouter(llm).route(message)
+    reply = format_route_reply(route)
+    if materials is not None:
         reply += f"\n\n{format_material_summary(materials)}"
     return reply, route
 

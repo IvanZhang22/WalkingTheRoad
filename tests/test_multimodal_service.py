@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from app.multimodal.contracts import FileContentPart, InputAudioContentPart
+from app.multimodal.downloader import MockDownloader
 from app.multimodal.models import (
+    DownloadedFile,
     MaterialLocator,
     MaterialStatus,
     ProviderResult,
@@ -53,7 +55,7 @@ async def test_signed_url_rotation_keeps_material_identity_stable() -> None:
 
 
 class LowConfidenceASR(ASRProvider):
-    async def transcribe(self, source: InputAudioContentPart) -> ProviderResult:
+    async def transcribe(self, source: DownloadedFile) -> ProviderResult:
         return ProviderResult(
             provider_name="test",
             provider_model="low-confidence",
@@ -68,12 +70,13 @@ class LowConfidenceASR(ASRProvider):
 
 
 class FailingASR(ASRProvider):
-    async def transcribe(self, source: InputAudioContentPart) -> ProviderResult:
+    async def transcribe(self, source: DownloadedFile) -> ProviderResult:
         raise RuntimeError("secret upstream detail")
 
 
 async def test_low_confidence_is_held_out_of_automatic_evidence() -> None:
     service = MaterialIngestService(
+        downloader=MockDownloader(),
         asr=LowConfidenceASR(),
         ocr=MockOCRProvider(),
         document_parser=MockDocumentParser(),
@@ -88,6 +91,7 @@ async def test_low_confidence_is_held_out_of_automatic_evidence() -> None:
 
 async def test_one_attachment_failure_does_not_drop_other_materials() -> None:
     service = MaterialIngestService(
+        downloader=MockDownloader(),
         asr=FailingASR(),
         ocr=MockOCRProvider(),
         document_parser=MockDocumentParser(),

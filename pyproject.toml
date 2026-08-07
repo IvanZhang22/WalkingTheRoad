@@ -16,11 +16,11 @@ dependencies = [
   "python-multipart>=0.0.20,<1",
   "python-docx>=1.2,<2",
   "pypdf>=6.0,<7",
+  "httpx>=0.28,<1",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "httpx>=0.28,<1",
   "pytest>=8.4,<9",
   "pytest-asyncio>=1.1,<2",
   "ruff>=0.12,<1",

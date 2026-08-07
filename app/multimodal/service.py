@@ -12,7 +12,10 @@ from app.multimodal.contracts import (
     FileContentPart,
     InputAudioContentPart,
 )
+from app.multimodal.downloader import MaterialDownloader, MockDownloader, SafeDownloader
+from app.multimodal.errors import MaterialIngestError
 from app.multimodal.models import (
+    DownloadedFile,
     Material,
     MaterialIssue,
     MaterialModality,
@@ -22,34 +25,34 @@ from app.multimodal.models import (
     ProviderSegment,
 )
 from app.multimodal.providers.base import ASRProvider, DocumentParser, OCRProvider
+from app.multimodal.providers.document import LocalDocumentParser
 from app.multimodal.providers.mock import MockASRProvider, MockDocumentParser, MockOCRProvider
+from app.multimodal.providers.unavailable import UnavailableASRProvider, UnavailableOCRProvider
 
 AttachmentPart = InputAudioContentPart | FileContentPart
-
-
-class MaterialProviderError(Exception):
-    def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:
-        super().__init__(message)
-        self.code = code
-        self.public_message = message
-        self.retryable = retryable
 
 
 class MaterialIngestService:
     def __init__(
         self,
         *,
+        downloader: MaterialDownloader,
         asr: ASRProvider,
         ocr: OCRProvider,
         document_parser: DocumentParser,
         confidence_threshold: float = 0.8,
+        enabled_modalities: frozenset[MaterialModality] | None = None,
     ) -> None:
         if not 0 <= confidence_threshold <= 1:
             raise ValueError("confidence_threshold 必须位于 0 到 1 之间")
+        self.downloader = downloader
         self.asr = asr
         self.ocr = ocr
         self.document_parser = document_parser
         self.confidence_threshold = confidence_threshold
+        self.enabled_modalities = (
+            frozenset(MaterialModality) if enabled_modalities is None else enabled_modalities
+        )
 
     async def ingest(self, attachments: list[AttachmentPart]) -> list[Material]:
         """并发处理附件；单个失败不会取消其它附件。"""
@@ -59,8 +62,15 @@ class MaterialIngestService:
     async def _ingest_isolated(self, attachment: AttachmentPart) -> Material:
         material_id, fingerprint = _material_identity(attachment)
         filename, modality = _attachment_identity(attachment)
+        downloaded = None
         try:
-            result = await self._call_provider(attachment, modality)
+            if modality not in self.enabled_modalities:
+                raise MaterialIngestError(
+                    "XDW-MM-PROVIDER-NOT-CONFIGURED",
+                    f"{modality.value} 材料的真实 Provider 尚未配置。",
+                )
+            downloaded = await self.downloader.download(attachment)
+            result = await self._call_provider(downloaded, modality)
             return self._normalize_result(
                 material_id=material_id,
                 fingerprint=fingerprint,
@@ -68,7 +78,7 @@ class MaterialIngestService:
                 modality=modality,
                 result=result,
             )
-        except MaterialProviderError as exc:
+        except MaterialIngestError as exc:
             issue = MaterialIssue(
                 code=exc.code,
                 message=exc.public_message,
@@ -80,6 +90,9 @@ class MaterialIngestService:
                 message="材料处理失败；服务端没有返回可用内容。",
                 retryable=False,
             )
+        finally:
+            if downloaded is not None:
+                downloaded.path.unlink(missing_ok=True)
         return Material(
             material_id=material_id,
             source_fingerprint=fingerprint,
@@ -90,13 +103,13 @@ class MaterialIngestService:
         )
 
     async def _call_provider(
-        self, attachment: AttachmentPart, modality: MaterialModality
+        self, downloaded: DownloadedFile, modality: MaterialModality
     ) -> ProviderResult:
-        if isinstance(attachment, InputAudioContentPart):
-            return await self.asr.transcribe(attachment)
+        if modality is MaterialModality.audio:
+            return await self.asr.transcribe(downloaded)
         if modality is MaterialModality.image:
-            return await self.ocr.recognize(attachment)
-        return await self.document_parser.parse(attachment)
+            return await self.ocr.recognize(downloaded)
+        return await self.document_parser.parse(downloaded)
 
     def _normalize_result(
         self,
@@ -133,14 +146,22 @@ class MaterialIngestService:
         review_queue = [
             segment.segment_id for segment in segments if not segment.automatic_evidence_use
         ]
+        normalized_text = result.normalized_text or "\n".join(
+            segment.text for segment in segments
+        )
+        automatic_text = (
+            normalized_text
+            if len(usable) == len(segments)
+            else "\n".join(segment.text for segment in usable)
+        )
         return Material(
             material_id=material_id,
             source_fingerprint=fingerprint,
             filename=filename,
             modality=modality,
             status=MaterialStatus.ready if not review_queue else MaterialStatus.manual_review,
-            normalized_text="\n".join(segment.text for segment in segments),
-            automatic_text="\n".join(segment.text for segment in usable),
+            normalized_text=normalized_text,
+            automatic_text=automatic_text,
             provider_name=result.provider_name,
             provider_model=result.provider_model,
             segments=segments,
@@ -218,9 +239,34 @@ def _has_required_locator(modality: MaterialModality, segment: ProviderSegment) 
 
 def build_mock_ingest_service() -> MaterialIngestService:
     return MaterialIngestService(
+        downloader=MockDownloader(),
         asr=MockASRProvider(),
         ocr=MockOCRProvider(),
         document_parser=MockDocumentParser(),
+    )
+
+
+def build_document_ingest_service(
+    *,
+    max_upload_bytes: int,
+    max_document_chars: int,
+    connect_timeout: float,
+    read_timeout: float,
+    max_redirects: int,
+) -> MaterialIngestService:
+    """v2.2.1 Live 服务：只开放普通文档，音频和图片继续失败关闭。"""
+
+    return MaterialIngestService(
+        downloader=SafeDownloader(
+            max_bytes=max_upload_bytes,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
+            max_redirects=max_redirects,
+        ),
+        asr=UnavailableASRProvider(),
+        ocr=UnavailableOCRProvider(),
+        document_parser=LocalDocumentParser(max_document_chars=max_document_chars),
+        enabled_modalities=frozenset({MaterialModality.document}),
     )
 
 

@@ -13,7 +13,11 @@ from pydantic import ValidationError
 from app.config import PROJECT_ROOT, Settings, get_settings
 from app.llm import LLMClient, LLMError, MockLLMClient, OpenAICompatibleClient
 from app.models import IntentRouteRequest, IntentRouteResult, ProjectContext
-from app.multimodal.service import MaterialIngestService, build_mock_ingest_service
+from app.multimodal.service import (
+    MaterialIngestService,
+    build_document_ingest_service,
+    build_mock_ingest_service,
+)
 from app.openai_compat import (
     PUBLIC_MODEL_ID,
     ChatCompletionRequest,
@@ -68,16 +72,20 @@ def create_app(
     app.state.store = store
     app.state.llm = active_llm
     app.state.llm_error = llm_error
-    multimodal_provider = "injected" if material_ingestor is not None else "not_configured"
-    app.state.material_ingestor = (
-        material_ingestor
-        if material_ingestor is not None
-        else build_mock_ingest_service()
-        if active_settings.app_mode == "mock"
-        else None
-    )
-    if material_ingestor is None and active_settings.app_mode == "mock":
+    multimodal_provider = "injected" if material_ingestor is not None else "document_ingest"
+    if material_ingestor is not None:
+        app.state.material_ingestor = material_ingestor
+    elif active_settings.app_mode == "mock":
+        app.state.material_ingestor = build_mock_ingest_service()
         multimodal_provider = "mock"
+    else:
+        app.state.material_ingestor = build_document_ingest_service(
+            max_upload_bytes=active_settings.max_upload_bytes,
+            max_document_chars=active_settings.max_document_chars,
+            connect_timeout=active_settings.multimodal_connect_timeout_seconds,
+            read_timeout=active_settings.multimodal_read_timeout_seconds,
+            max_redirects=active_settings.multimodal_max_redirects,
+        )
     app.state.multimodal_provider = multimodal_provider
     app.state.tasks = set()
 
