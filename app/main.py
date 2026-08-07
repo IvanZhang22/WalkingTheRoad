@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from app.config import PROJECT_ROOT, Settings, get_settings
 from app.llm import LLMClient, LLMError, MockLLMClient, OpenAICompatibleClient
 from app.models import IntentRouteRequest, IntentRouteResult, ProjectContext
+from app.multimodal.service import MaterialIngestService, build_mock_ingest_service
 from app.openai_compat import (
     PUBLIC_MODEL_ID,
     ChatCompletionRequest,
@@ -41,7 +42,12 @@ def _make_llm(settings: Settings) -> LLMClient:
     return OpenAICompatibleClient(settings)
 
 
-def create_app(*, settings: Settings | None = None, llm: LLMClient | None = None) -> FastAPI:
+def create_app(
+    *,
+    settings: Settings | None = None,
+    llm: LLMClient | None = None,
+    material_ingestor: MaterialIngestService | None = None,
+) -> FastAPI:
     active_settings = settings or get_settings()
     store = RunStore()
     active_llm = llm
@@ -62,6 +68,17 @@ def create_app(*, settings: Settings | None = None, llm: LLMClient | None = None
     app.state.store = store
     app.state.llm = active_llm
     app.state.llm_error = llm_error
+    multimodal_provider = "injected" if material_ingestor is not None else "not_configured"
+    app.state.material_ingestor = (
+        material_ingestor
+        if material_ingestor is not None
+        else build_mock_ingest_service()
+        if active_settings.app_mode == "mock"
+        else None
+    )
+    if material_ingestor is None and active_settings.app_mode == "mock":
+        multimodal_provider = "mock"
+    app.state.multimodal_provider = multimodal_provider
     app.state.tasks = set()
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
@@ -81,6 +98,8 @@ def create_app(*, settings: Settings | None = None, llm: LLMClient | None = None
             "thinking": active_settings.thinking,
             "key_configured": active_settings.key_configured,
             "agent_key_configured": active_settings.agent_key_configured,
+            "multimodal_contract_enabled": True,
+            "multimodal_provider": app.state.multimodal_provider,
             "configuration_error": app.state.llm_error,
         }
 
@@ -121,7 +140,11 @@ def create_app(*, settings: Settings | None = None, llm: LLMClient | None = None
                 },
             )
         completion_id, created = new_completion_identity()
-        content, _ = await build_reply(app.state.llm, payload)
+        content, _ = await build_reply(
+            app.state.llm,
+            payload,
+            material_ingestor=app.state.material_ingestor,
+        )
         if payload.stream:
             return StreamingResponse(
                 stream_completion(content, completion_id=completion_id, created=created),
