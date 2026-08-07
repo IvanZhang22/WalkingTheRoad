@@ -28,6 +28,8 @@ from app.models import (
     WorkflowId,
     WorkflowSpec,
 )
+from app.multimodal.evidence_linking import prepare_w3_material_bundle
+from app.multimodal.models import Material, MaterialSegment
 from app.project_prompts import PROJECT_WRITEBACK_SYSTEM, build_project_writeback_user_prompt
 from app.prompts import (
     W1_DIAGNOSIS_SYSTEM,
@@ -265,6 +267,66 @@ class WorkflowService:
         self.llm = llm
         self.settings = settings
 
+    async def analyze_materials(self, materials: list[Material], research_question: str) -> str:
+        """从统一多模态材料直接执行 W3，并返回最终报告。"""
+
+        bundle = prepare_w3_material_bundle(
+            materials, max_characters=self.settings.max_document_chars
+        )
+        fields = MaterialAnalysisInput(
+            research_question=(
+                research_question.strip() or "当前材料中有哪些可核验的主题、差异、反例和信息缺口？"
+            ),
+            source_id=bundle.source_id,
+            source_type=bundle.source_type,
+            source_context=bundle.source_context,
+        )
+        record = await self.store.create("w3")
+        await self.store.set_running(record.run_id)
+        try:
+            input_index = await self.store.begin_node(
+                record.run_id, "1I-3-1", "输入-多模态材料分析-1"
+            )
+            await self.store.complete_node(
+                record.run_id,
+                input_index,
+                {
+                    **fields.model_dump(),
+                    "materials": [
+                        {
+                            "material_id": material.material_id,
+                            "filename": material.filename,
+                            "modality": material.modality.value,
+                            "status": material.status.value,
+                            "automatic_segment_count": sum(
+                                segment.automatic_evidence_use for segment in material.segments
+                            ),
+                        }
+                        for material in materials
+                    ],
+                    "source_text_length": bundle.character_count,
+                },
+            )
+            return await self._run_w3_source(
+                record.run_id,
+                fields,
+                bundle.source_text,
+                material_metadata={
+                    "source_id": bundle.source_id,
+                    "display_name": bundle.display_name,
+                    "source_type": bundle.source_type,
+                    "source_context": bundle.source_context,
+                    "size_bytes": 0,
+                    "character_count": bundle.character_count,
+                    "sha256": bundle.sha256,
+                },
+                segment_index=bundle.segment_index,
+                project_context=None,
+            )
+        except Exception as exc:
+            await self.store.fail(record.run_id, str(exc))
+            raise
+
     async def execute(
         self,
         run_id: str,
@@ -285,14 +347,10 @@ class WorkflowService:
                 await self._run_w2(run_id, w2_fields, project_context)
             elif workflow_id == "w3":
                 w3_fields = MaterialAnalysisInput.model_validate(raw_fields)
-                await self._run_w3(
-                    run_id, w3_fields, filename, file_bytes, project_context
-                )
+                await self._run_w3(run_id, w3_fields, filename, file_bytes, project_context)
             elif workflow_id == "w4":
                 w4_fields = QualityAuditInput.model_validate(raw_fields)
-                await self._run_w4(
-                    run_id, w4_fields, filename, file_bytes, project_context
-                )
+                await self._run_w4(run_id, w4_fields, filename, file_bytes, project_context)
             else:
                 raise ValueError(f"未知工作流：{workflow_id}")
         except ValidationError as exc:
@@ -444,8 +502,10 @@ class WorkflowService:
                 json_model=ProjectPatchProposal,
             )
             proposal = ProjectPatchProposal.model_validate(load_json(output))
-            if workflow_id == "w3" and structured_result and structured_result.get(
-                "material_metadata"
+            if (
+                workflow_id == "w3"
+                and structured_result
+                and structured_result.get("material_metadata")
             ):
                 proposal.updates = [
                     update
@@ -456,9 +516,7 @@ class WorkflowService:
                     ProjectFieldUpdate(
                         path=ProjectFieldPath.materials,
                         proposed_value=[
-                            ProjectMaterial.model_validate(
-                                structured_result["material_metadata"]
-                            )
+                            ProjectMaterial.model_validate(structured_result["material_metadata"])
                         ],
                         reason="由后端根据本次上传文件生成的材料元数据，不含原文。",
                     )
@@ -715,6 +773,34 @@ class WorkflowService:
         )
         if source_text is None:
             raise ValueError("没有取得材料正文。")
+        material_metadata = {
+            "source_id": fields.source_id,
+            "display_name": filename or fields.source_id,
+            "source_type": fields.source_type,
+            "source_context": fields.source_context,
+            "size_bytes": len(file_bytes or b""),
+            "character_count": len(source_text),
+            "sha256": hashlib.sha256(file_bytes or b"").hexdigest(),
+        }
+        await self._run_w3_source(
+            run_id,
+            fields,
+            source_text,
+            material_metadata=material_metadata,
+            segment_index=None,
+            project_context=project_context,
+        )
+
+    async def _run_w3_source(
+        self,
+        run_id: str,
+        fields: MaterialAnalysisInput,
+        source_text: str,
+        *,
+        material_metadata: dict[str, Any],
+        segment_index: dict[str, MaterialSegment] | None,
+        project_context: ProjectContext | None,
+    ) -> str:
         raw = fields.model_dump()
         extraction_json = await self._llm_node(
             run_id,
@@ -730,7 +816,7 @@ class WorkflowService:
             run_id,
             "7C-3-1",
             "代码-引文核验-1",
-            lambda: verify_material_evidence(extracted, source_text),
+            lambda: verify_material_evidence(extracted, source_text, segment_index),
         )
         markdown = await self._llm_node(
             run_id,
@@ -740,16 +826,7 @@ class WorkflowService:
             w3_synthesis_user(raw, verified, rejected),
             0.1,
         )
-        material_metadata = {
-            "source_id": fields.source_id,
-            "display_name": filename or fields.source_id,
-            "source_type": fields.source_type,
-            "source_context": fields.source_context,
-            "size_bytes": len(file_bytes or b""),
-            "character_count": len(source_text),
-            "sha256": hashlib.sha256(file_bytes or b"").hexdigest(),
-            "summary": str(extracted.get("material_summary", ""))[:4000],
-        }
+        material_metadata["summary"] = str(extracted.get("material_summary", ""))[:4000]
         patch = (
             await self._project_writeback_node(
                 run_id=run_id,
@@ -768,6 +845,7 @@ class WorkflowService:
             else None
         )
         await self._finish(run_id, "2O-3-1", "输出-材料分析-1", markdown, patch)
+        return markdown
 
     async def _run_w4(
         self,

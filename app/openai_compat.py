@@ -5,7 +5,7 @@ import json
 import secrets
 import time
 from collections.abc import AsyncIterator
-from typing import Literal
+from typing import Literal, Protocol
 from uuid import uuid4
 
 from fastapi import HTTPException, status
@@ -21,6 +21,7 @@ from app.multimodal.contracts import (
     text_from_content,
     validate_attachment_count,
 )
+from app.multimodal.models import Material
 from app.multimodal.service import MaterialIngestService, format_material_summary
 from app.routing import IntentRouter
 
@@ -31,6 +32,10 @@ WORKFLOW_NAMES = {
     "w3": "W3 质性材料分析",
     "w4": "W4 研究质量质检",
 }
+
+
+class MaterialAnalysisRunner(Protocol):
+    async def analyze_materials(self, materials: list[Material], research_question: str) -> str: ...
 
 
 class ChatMessage(BaseModel):
@@ -146,6 +151,7 @@ async def build_reply(
     llm: LLMClient,
     request: ChatCompletionRequest,
     material_ingestor: MaterialIngestService | None = None,
+    material_analyzer: MaterialAnalysisRunner | None = None,
 ) -> tuple[str, IntentRouteResult | None]:
     if request.max_tokens == 1:
         return "行小道服务正常。", None
@@ -168,7 +174,21 @@ async def build_reply(
     route = await IntentRouter(llm).route(message)
     reply = format_route_reply(route)
     if materials is not None:
-        reply += f"\n\n{format_material_summary(materials)}"
+        summary = format_material_summary(materials)
+        if (
+            route.recommended_workflow == "w3"
+            and material_analyzer is not None
+            and any(material.automatic_evidence_use for material in materials)
+        ):
+            report = await material_analyzer.analyze_materials(materials, message)
+            reply = (
+                "已进入 **W3 质性材料分析**，并完成自动可用片段的证据提取、"
+                f"引文核验和主题生成。\n\n{summary}\n\n{report}"
+            )
+        else:
+            reply += f"\n\n{summary}"
+            if not any(material.automatic_evidence_use for material in materials):
+                reply += "\n\n当前没有通过自动证据门控的片段；W3 未运行，请先完成人工复核。"
     return reply, route
 
 
@@ -195,7 +215,9 @@ def completion_payload(content: str, *, completion_id: str, created: int) -> dic
     }
 
 
-async def stream_completion(content: str, *, completion_id: str, created: int) -> AsyncIterator[str]:
+async def stream_completion(
+    content: str, *, completion_id: str, created: int
+) -> AsyncIterator[str]:
     role_chunk = {
         "id": completion_id,
         "object": "chat.completion.chunk",
@@ -216,7 +238,11 @@ async def stream_completion(content: str, *, completion_id: str, created: int) -
         "created": created,
         "model": PUBLIC_MODEL_ID,
         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 1, "completion_tokens": max(1, len(content) // 4), "total_tokens": max(2, len(content) // 4 + 1)},
+        "usage": {
+            "prompt_tokens": 1,
+            "completion_tokens": max(1, len(content) // 4),
+            "total_tokens": max(2, len(content) // 4 + 1),
+        },
     }
     for chunk in (role_chunk, content_chunk, stop_chunk):
         yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"

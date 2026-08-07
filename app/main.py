@@ -72,6 +72,9 @@ def create_app(
     app.state.store = store
     app.state.llm = active_llm
     app.state.llm_error = llm_error
+    app.state.workflow_service = (
+        WorkflowService(store, active_llm, active_settings) if active_llm is not None else None
+    )
     multimodal_provider = "injected" if material_ingestor is not None else "live"
     if material_ingestor is not None:
         app.state.material_ingestor = material_ingestor
@@ -170,6 +173,7 @@ def create_app(
             app.state.llm,
             payload,
             material_ingestor=app.state.material_ingestor,
+            material_analyzer=app.state.workflow_service,
         )
         if payload.stream:
             return StreamingResponse(
@@ -236,7 +240,8 @@ def create_app(
             file_bytes = await source_file.read(active_settings.max_upload_bytes + 1)
 
         record = await store.create(workflow_id)
-        service = WorkflowService(store, app.state.llm, active_settings)
+        service = app.state.workflow_service
+        assert service is not None
         task = asyncio.create_task(
             service.execute(
                 record.run_id,

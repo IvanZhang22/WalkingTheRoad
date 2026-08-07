@@ -141,6 +141,7 @@ def test_mock_multimodal_parts_use_same_chat_endpoint_without_echoing_url() -> N
         assert "W3 质性材料分析" in content
         assert "共 2 份" in content
         assert "自动可用 2 份" in content
+        assert "# 3L-3-2 模拟结果" in content
         assert "MAT_" in content
         assert signed_url not in content
         assert "must-not-echo" not in content
