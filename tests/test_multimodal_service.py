@@ -5,13 +5,20 @@ from app.multimodal.downloader import MockDownloader
 from app.multimodal.models import (
     DownloadedFile,
     MaterialLocator,
+    MaterialModality,
     MaterialStatus,
     ProviderResult,
     ProviderSegment,
 )
 from app.multimodal.providers.base import ASRProvider
 from app.multimodal.providers.mock import MockDocumentParser, MockOCRProvider
-from app.multimodal.service import MaterialIngestService, build_mock_ingest_service
+from app.multimodal.providers.stepfun_asr import StepFunASRProvider
+from app.multimodal.providers.unavailable import UnavailableASRProvider
+from app.multimodal.service import (
+    MaterialIngestService,
+    build_live_ingest_service,
+    build_mock_ingest_service,
+)
 
 
 def audio(url: str = "https://files.example.org/interview.mp3") -> InputAudioContentPart:
@@ -44,9 +51,9 @@ async def test_mock_service_normalizes_all_v22_modalities() -> None:
 
 async def test_signed_url_rotation_keeps_material_identity_stable() -> None:
     service = build_mock_ingest_service()
-    first = (
-        await service.ingest([audio("https://files.example.org/interview.mp3?token=first")])
-    )[0]
+    first = (await service.ingest([audio("https://files.example.org/interview.mp3?token=first")]))[
+        0
+    ]
     second = (
         await service.ingest([audio("https://files.example.org/interview.mp3?token=second")])
     )[0]
@@ -101,3 +108,32 @@ async def test_one_attachment_failure_does_not_drop_other_materials() -> None:
     assert failed.issues[0].code == "XDW-MM-UNEXPECTED"
     assert "secret" not in failed.model_dump_json()
     assert succeeded.status is MaterialStatus.ready
+
+
+def live_service(api_key: str) -> MaterialIngestService:
+    return build_live_ingest_service(
+        max_upload_bytes=1024,
+        max_document_chars=1000,
+        connect_timeout=1,
+        read_timeout=1,
+        max_redirects=0,
+        asr_provider="stepfun",
+        stepfun_asr_api_key=api_key,
+        stepfun_asr_base_url="https://api.stepfun.com/v1",
+        stepfun_asr_model="step-asr-1.1",
+        stepfun_asr_request_timeout=1,
+        stepfun_asr_poll_timeout=1,
+        stepfun_asr_poll_interval=0,
+    )
+
+
+def test_live_service_only_enables_audio_when_real_key_is_configured() -> None:
+    disabled = live_service("")
+    assert disabled.enabled_modalities == frozenset({MaterialModality.document})
+    assert isinstance(disabled.asr, UnavailableASRProvider)
+
+    enabled = live_service("test-key")
+    assert enabled.enabled_modalities == frozenset(
+        {MaterialModality.audio, MaterialModality.document}
+    )
+    assert isinstance(enabled.asr, StepFunASRProvider)

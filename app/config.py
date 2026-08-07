@@ -47,6 +47,13 @@ class Settings:
     multimodal_connect_timeout_seconds: int = 10
     multimodal_read_timeout_seconds: int = 120
     multimodal_max_redirects: int = 3
+    asr_provider: str = "disabled"
+    stepfun_asr_api_key: str = ""
+    stepfun_asr_base_url: str = "https://api.stepfun.com/v1"
+    stepfun_asr_model: str = "step-asr-1.1"
+    stepfun_asr_request_timeout_seconds: int = 30
+    stepfun_asr_poll_timeout_seconds: int = 300
+    stepfun_asr_poll_interval_seconds: int = 2
 
     @property
     def key_configured(self) -> bool:
@@ -55,6 +62,10 @@ class Settings:
     @property
     def agent_key_configured(self) -> bool:
         return bool(self.agent_api_key.strip())
+
+    @property
+    def stepfun_asr_key_configured(self) -> bool:
+        return bool(self.stepfun_asr_api_key.strip())
 
 
 def get_settings() -> Settings:
@@ -71,6 +82,10 @@ def get_settings() -> Settings:
     app_mode = os.getenv("APP_MODE", "live").strip().lower()
     if app_mode not in {"live", "mock"}:
         raise ValueError("APP_MODE 只能是 live 或 mock")
+
+    asr_provider = os.getenv("ASR_PROVIDER", "disabled").strip().lower()
+    if asr_provider not in {"disabled", "stepfun"}:
+        raise ValueError("ASR_PROVIDER 只能是 disabled 或 stepfun")
 
     defaults = {
         "stepfun": {
@@ -95,8 +110,11 @@ def get_settings() -> Settings:
         else defaults["model"]
     )
 
+    model_api_key = os.getenv("MODEL_API_KEY", legacy_api_key)
+    stepfun_key_fallback = model_api_key if provider == "stepfun" else ""
+
     return Settings(
-        api_key=os.getenv("MODEL_API_KEY", legacy_api_key),
+        api_key=model_api_key,
         base_url=os.getenv(
             "MODEL_BASE_URL",
             legacy_base_url,
@@ -109,9 +127,18 @@ def get_settings() -> Settings:
         max_document_chars=_positive_int("MAX_DOCUMENT_CHARS", 300_000),
         provider=provider,
         agent_api_key=os.getenv("AGENT_API_KEY", ""),
-        multimodal_connect_timeout_seconds=_positive_int(
-            "MULTIMODAL_CONNECT_TIMEOUT_SECONDS", 10
-        ),
+        multimodal_connect_timeout_seconds=_positive_int("MULTIMODAL_CONNECT_TIMEOUT_SECONDS", 10),
         multimodal_read_timeout_seconds=_positive_int("MULTIMODAL_READ_TIMEOUT_SECONDS", 120),
         multimodal_max_redirects=_non_negative_int("MULTIMODAL_MAX_REDIRECTS", 3),
+        asr_provider=asr_provider,
+        stepfun_asr_api_key=(os.getenv("STEPFUN_ASR_API_KEY", "").strip() or stepfun_key_fallback),
+        stepfun_asr_base_url=os.getenv("STEPFUN_ASR_BASE_URL", "https://api.stepfun.com/v1").rstrip(
+            "/"
+        ),
+        stepfun_asr_model=os.getenv("STEPFUN_ASR_MODEL", "step-asr-1.1"),
+        stepfun_asr_request_timeout_seconds=_positive_int(
+            "STEPFUN_ASR_REQUEST_TIMEOUT_SECONDS", 30
+        ),
+        stepfun_asr_poll_timeout_seconds=_positive_int("STEPFUN_ASR_POLL_TIMEOUT_SECONDS", 300),
+        stepfun_asr_poll_interval_seconds=_non_negative_int("STEPFUN_ASR_POLL_INTERVAL_SECONDS", 2),
     )

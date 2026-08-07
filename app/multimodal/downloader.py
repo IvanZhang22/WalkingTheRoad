@@ -193,11 +193,11 @@ class SafeDownloader(MaterialDownloader):
                             f"附件服务返回 HTTP {response.status_code}。",
                             retryable=response.status_code >= 500,
                         )
-                    return await self._stream_to_temp(response, filename, suffix)
+                    return await self._stream_to_temp(response, filename, suffix, current)
         raise MaterialIngestError("XDW-HTTP-REDIRECT", "附件地址重定向次数过多。")
 
     async def _stream_to_temp(
-        self, response: httpx.Response, filename: str, suffix: str
+        self, response: httpx.Response, filename: str, suffix: str, source_url: str
     ) -> DownloadedFile:
         declared = response.headers.get("content-length")
         if declared:
@@ -221,14 +221,10 @@ class SafeDownloader(MaterialDownloader):
                 async for chunk in response.aiter_bytes(1024 * 1024):
                     size += len(chunk)
                     if size > self.max_bytes:
-                        raise MaterialIngestError(
-                            "XDW-HTTP-SIZE", "附件超过允许的大小限制。"
-                        )
+                        raise MaterialIngestError("XDW-HTTP-SIZE", "附件超过允许的大小限制。")
                     stream.write(chunk)
                     digest.update(chunk)
-            media_type = (
-                response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-            )
+            media_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
             _validate_file_type(
                 path,
                 suffix,
@@ -237,10 +233,10 @@ class SafeDownloader(MaterialDownloader):
             )
             return DownloadedFile(
                 path=path,
+                source_url=source_url,
+                source_format=suffix,
                 filename=filename,
-                mime_type=(
-                    PREFERRED_MIME[suffix] if media_type in GENERIC_MIME else media_type
-                ),
+                mime_type=(PREFERRED_MIME[suffix] if media_type in GENERIC_MIME else media_type),
                 size_bytes=size,
                 sha256=digest.hexdigest(),
             )
@@ -253,7 +249,7 @@ class MockDownloader(MaterialDownloader):
     """仅为契约测试创建最小临时文件，不访问 source.url。"""
 
     async def download(self, source: AttachmentPart) -> DownloadedFile:
-        _, filename, suffix = _source_fields(source)
+        source_url, filename, suffix = _source_fields(source)
         content = _mock_content(suffix)
         file_descriptor, raw_path = tempfile.mkstemp(prefix="xdw_mock_", suffix=f".{suffix}")
         os.close(file_descriptor)
@@ -261,6 +257,8 @@ class MockDownloader(MaterialDownloader):
         path.write_bytes(content)
         return DownloadedFile(
             path=path,
+            source_url=source_url,
+            source_format=suffix,
             filename=filename,
             mime_type=PREFERRED_MIME[suffix],
             size_bytes=len(content),

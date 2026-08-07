@@ -27,6 +27,7 @@ from app.multimodal.models import (
 from app.multimodal.providers.base import ASRProvider, DocumentParser, OCRProvider
 from app.multimodal.providers.document import LocalDocumentParser
 from app.multimodal.providers.mock import MockASRProvider, MockDocumentParser, MockOCRProvider
+from app.multimodal.providers.stepfun_asr import StepFunASRProvider
 from app.multimodal.providers.unavailable import UnavailableASRProvider, UnavailableOCRProvider
 
 AttachmentPart = InputAudioContentPart | FileContentPart
@@ -146,9 +147,7 @@ class MaterialIngestService:
         review_queue = [
             segment.segment_id for segment in segments if not segment.automatic_evidence_use
         ]
-        normalized_text = result.normalized_text or "\n".join(
-            segment.text for segment in segments
-        )
+        normalized_text = result.normalized_text or "\n".join(segment.text for segment in segments)
         automatic_text = (
             normalized_text
             if len(usable) == len(segments)
@@ -231,9 +230,8 @@ def _has_required_locator(modality: MaterialModality, segment: ProviderSegment) 
         return locator.start_ms is not None and locator.end_ms is not None
     if modality is MaterialModality.image:
         return locator.bbox is not None
-    return (
-        locator.page is not None
-        or (locator.char_start is not None and locator.char_end is not None)
+    return locator.page is not None or (
+        locator.char_start is not None and locator.char_end is not None
     )
 
 
@@ -267,6 +265,50 @@ def build_document_ingest_service(
         ocr=UnavailableOCRProvider(),
         document_parser=LocalDocumentParser(max_document_chars=max_document_chars),
         enabled_modalities=frozenset({MaterialModality.document}),
+    )
+
+
+def build_live_ingest_service(
+    *,
+    max_upload_bytes: int,
+    max_document_chars: int,
+    connect_timeout: float,
+    read_timeout: float,
+    max_redirects: int,
+    asr_provider: str,
+    stepfun_asr_api_key: str,
+    stepfun_asr_base_url: str,
+    stepfun_asr_model: str,
+    stepfun_asr_request_timeout: float,
+    stepfun_asr_poll_timeout: float,
+    stepfun_asr_poll_interval: float,
+) -> MaterialIngestService:
+    """按显式环境变量启用真实 Provider；未配置能力继续失败关闭。"""
+
+    enabled_modalities = {MaterialModality.document}
+    asr: ASRProvider = UnavailableASRProvider()
+    if asr_provider == "stepfun" and stepfun_asr_api_key.strip():
+        asr = StepFunASRProvider(
+            api_key=stepfun_asr_api_key,
+            base_url=stepfun_asr_base_url,
+            model=stepfun_asr_model,
+            request_timeout=stepfun_asr_request_timeout,
+            poll_timeout=stepfun_asr_poll_timeout,
+            poll_interval=stepfun_asr_poll_interval,
+        )
+        enabled_modalities.add(MaterialModality.audio)
+
+    return MaterialIngestService(
+        downloader=SafeDownloader(
+            max_bytes=max_upload_bytes,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
+            max_redirects=max_redirects,
+        ),
+        asr=asr,
+        ocr=UnavailableOCRProvider(),
+        document_parser=LocalDocumentParser(max_document_chars=max_document_chars),
+        enabled_modalities=frozenset(enabled_modalities),
     )
 
 
