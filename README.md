@@ -15,7 +15,8 @@ Vercel 可用于 Preview 和直接 API 验收；既有实测表明清小搭服�
 3、在自动打开的 `.env` 中填写：
 
 ```text
-MODEL_API_KEY=你的阶跃星辰STEP_API_KEY
+MODEL_PROVIDER=vercel
+AI_GATEWAY_API_KEY=你的Vercel_AI_Gateway_Key
 ```
 
 4、保存后回到命令窗口按回车。Chrome 会自动打开：
@@ -92,26 +93,28 @@ W3、W4 的 `7C` 节点只接受原文完全匹配或仅空白差异匹配。模
 
 ## 五、模型配置
 
-默认配置是阶跃星辰 Coding Plan：
+默认推荐使用 Vercel AI Gateway：
 
 ```text
-MODEL_PROVIDER=stepfun
-MODEL_BASE_URL=https://api.stepfun.com/step_plan/v1
-MODEL_NAME=step-3.5-flash
+MODEL_PROVIDER=vercel
+MODEL_BASE_URL=https://ai-gateway.vercel.sh/v1
+MODEL_NAME=openai/gpt-5.4-mini
 APP_MODE=live
 ```
 
-当前已验证配置使用 `step-3.5-flash` 和 Step Plan 地址。`.env` 下半部分保留了 DeepSeek 备用块；切换时只保留其中一组未注释的 `MODEL_*` 配置即可。
+Vercel 部署会自动注入 `VERCEL_OIDC_TOKEN`，不需要长期模型密钥；本地 live 调试才需要
+`AI_GATEWAY_API_KEY`。Gateway 当前每个团队有每月免费额度，超出后按模型实际费率计费。
+`.env.example` 仍保留阶跃和 DeepSeek 备用块。
 
 多模态 Provider 独立配置：
 
 ```text
-# 阶跃：真实分句时间戳，但官方不返回置信度，因此进入人工复核
-ASR_PROVIDER=stepfun
-
 # Deepgram：分句时间戳与置信度齐全，高置信片段可自动进入 W3
-# ASR_PROVIDER=deepgram
-# DEEPGRAM_API_KEY=你的Deepgram密钥
+ASR_PROVIDER=deepgram
+DEEPGRAM_API_KEY=你的Deepgram密钥
+
+# 阶跃 ASR 是可选备用；官方不返回置信度，因此进入人工复核
+# ASR_PROVIDER=stepfun
 
 # 图片和扫描 PDF 的 bbox、页码与行置信度
 OCR_PROVIDER=baidu
@@ -119,7 +122,7 @@ BAIDU_OCR_API_KEY=你的百度OCR_AK
 BAIDU_OCR_SECRET_KEY=你的百度OCR_SK
 ```
 
-阶跃 ASR 可复用阶跃 `MODEL_API_KEY`；Deepgram 和百度密钥必须单独配置。所有密钥只放服务端 `.env` 或部署平台环境变量。
+Vercel OIDC 只负责文本模型；Deepgram 和百度密钥仍需单独配置。所有长期密钥只放服务端 `.env` 或部署平台环境变量。
 
 开发时可将 `APP_MODE=mock`，这样不会调用真实 API，也不会产生费用。模拟结果只能用于检查工程链路，不能评价 Agent 的研究能力。
 

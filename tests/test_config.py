@@ -31,6 +31,22 @@ def test_stepfun_asr_does_not_reuse_another_vendor_key(
     assert settings.stepfun_asr_key_configured is False
 
 
+def test_vercel_provider_uses_automatic_oidc_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MODEL_PROVIDER", "vercel")
+    monkeypatch.setenv("MODEL_API_KEY", "")
+    monkeypatch.setenv("AI_GATEWAY_API_KEY", "")
+    monkeypatch.setenv("VERCEL_OIDC_TOKEN", "oidc-test-token")
+    monkeypatch.delenv("MODEL_BASE_URL", raising=False)
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+
+    settings = get_settings()
+
+    assert settings.api_key == "oidc-test-token"
+    assert settings.base_url == "https://ai-gateway.vercel.sh/v1"
+    assert settings.model == "openai/gpt-5.4-mini"
+    assert settings.key_configured is True
+
+
 def test_rejects_unknown_asr_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ASR_PROVIDER", "unknown")
     with pytest.raises(ValueError, match="ASR_PROVIDER"):
