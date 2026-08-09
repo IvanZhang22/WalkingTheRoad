@@ -219,8 +219,11 @@ WORKFLOW_SPECS = [
                 label="上传材料",
                 kind="file",
                 required=True,
-                help=("单文件：文档支持 TXT、MD、DOCX、文字型 PDF；音频支持 MP3、WAV、M4A、WEBM。"),
-                accept=".txt,.md,.docx,.pdf,.mp3,.wav,.m4a,.webm",
+                help=(
+                    "单文件：文档支持 TXT、MD、DOCX、PDF；音频支持 MP3、WAV、M4A、WEBM；"
+                    "图片支持 PNG、JPG、JPEG、WEBP。图片与扫描 PDF 需配置 OCR。"
+                ),
+                accept=(".txt,.md,.docx,.pdf,.mp3,.wav,.m4a,.webm,.png,.jpg,.jpeg,.webp"),
             ),
         ],
     ),
@@ -778,9 +781,23 @@ class WorkflowService:
             if filename is not None
             else ""
         )
-        if suffix in {".mp3", ".wav", ".m4a", ".webm"}:
+        multimodal_suffixes = {
+            ".txt",
+            ".md",
+            ".docx",
+            ".pdf",
+            ".mp3",
+            ".wav",
+            ".m4a",
+            ".webm",
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+        }
+        if self.material_ingestor is not None and suffix in multimodal_suffixes:
             assert filename is not None
-            await self._run_w3_audio(
+            await self._run_w3_material_upload(
                 run_id,
                 fields,
                 filename,
@@ -816,7 +833,7 @@ class WorkflowService:
             project_context=project_context,
         )
 
-    async def _run_w3_audio(
+    async def _run_w3_material_upload(
         self,
         run_id: str,
         fields: MaterialAnalysisInput,
@@ -824,16 +841,15 @@ class WorkflowService:
         file_bytes: bytes | None,
         project_context: ProjectContext | None,
     ) -> None:
-        index = await self.store.begin_node(run_id, "1I-3-1", "输入-音频材料分析-1")
+        index = await self.store.begin_node(run_id, "1I-3-1", "输入-多模态材料分析-1")
         try:
             if file_bytes is None:
-                raise ValueError("没有收到上传音频。")
-            if self.material_ingestor is None:
-                raise ValueError("网页音频接入服务尚未配置。")
+                raise ValueError("没有收到上传材料。")
+            assert self.material_ingestor is not None
             material = await self.material_ingestor.ingest_upload(filename, file_bytes)
             if material.status is MaterialStatus.failed:
                 messages = "；".join(issue.message for issue in material.issues)
-                raise ValueError(f"音频处理失败：{messages or '识别服务没有返回可用内容。'}")
+                raise ValueError(f"材料处理失败：{messages or '识别服务没有返回可用内容。'}")
             bundle = prepare_w3_material_bundle(
                 [material], max_characters=self.settings.max_document_chars
             )

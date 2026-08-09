@@ -35,7 +35,9 @@ def test_health_workflow_run_and_markdown_download() -> None:
             if field["name"] == "source_file"
         )
         assert ".m4a" in w3_file["accept"]
+        assert ".png" in w3_file["accept"]
         assert "M4A" in w3_file["help"]
+        assert "PNG" in w3_file["help"]
         response = client.post(
             "/api/runs",
             data={
