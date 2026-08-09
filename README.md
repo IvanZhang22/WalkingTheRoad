@@ -15,8 +15,8 @@ Vercel 可用于 Preview 和直接 API 验收；既有实测表明清小搭服�
 3、在自动打开的 `.env` 中填写：
 
 ```text
-MODEL_PROVIDER=vercel
-AI_GATEWAY_API_KEY=你的Vercel_AI_Gateway_Key
+MODEL_PROVIDER=openrouter
+OPENROUTER_API_KEY=你的OpenRouter_API_Key
 ```
 
 4、保存后回到命令窗口按回车。Chrome 会自动打开：
@@ -93,18 +93,19 @@ W3、W4 的 `7C` 节点只接受原文完全匹配或仅空白差异匹配。模
 
 ## 五、模型配置
 
-默认推荐使用 Vercel AI Gateway：
+免绑卡演示默认推荐使用 OpenRouter 的免费模型路由：
 
 ```text
-MODEL_PROVIDER=vercel
-MODEL_BASE_URL=https://ai-gateway.vercel.sh/v1
-MODEL_NAME=openai/gpt-5.4-mini
+MODEL_PROVIDER=openrouter
+MODEL_BASE_URL=https://openrouter.ai/api/v1
+MODEL_NAME=openrouter/free
 APP_MODE=live
 ```
 
-Vercel 部署会自动注入 `VERCEL_OIDC_TOKEN`，不需要长期模型密钥；本地 live 调试才需要
-`AI_GATEWAY_API_KEY`。Gateway 当前每个团队有每月免费额度，超出后按模型实际费率计费。
-`.env.example` 仍保留阶跃和 DeepSeek 备用块。
+运行 `python scripts/connect_openrouter_oauth.py` 可通过一次浏览器 OAuth 授权，将密钥直接写入
+已连接的 Vercel Production/Preview，不在终端或仓库中落盘。免费模型有每日请求限制，适合演示和
+低频试用；真实敏感访谈应在 OpenRouter 隐私设置中禁止训练与日志，并改用具备稳定数据政策的
+付费 Provider。`.env.example` 仍保留 Vercel AI Gateway、阶跃和 DeepSeek 备用块。
 
 多模态 Provider 独立配置：
 

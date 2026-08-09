@@ -99,8 +99,8 @@ class Settings:
 
 def get_settings() -> Settings:
     provider = os.getenv("MODEL_PROVIDER", "deepseek").strip().lower()
-    if provider not in {"stepfun", "deepseek", "vercel"}:
-        raise ValueError("MODEL_PROVIDER 只能是 stepfun、deepseek 或 vercel")
+    if provider not in {"stepfun", "deepseek", "vercel", "openrouter"}:
+        raise ValueError("MODEL_PROVIDER 只能是 stepfun、deepseek、vercel 或 openrouter")
 
     thinking = (
         os.getenv("MODEL_THINKING", os.getenv("DEEPSEEK_THINKING", "disabled")).strip().lower()
@@ -133,6 +133,10 @@ def get_settings() -> Settings:
             "base_url": "https://ai-gateway.vercel.sh/v1",
             "model": "openai/gpt-5.4-mini",
         },
+        "openrouter": {
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": "openrouter/free",
+        },
     }[provider]
 
     legacy_api_key = os.getenv("DEEPSEEK_API_KEY", "") if provider == "deepseek" else ""
@@ -154,6 +158,8 @@ def get_settings() -> Settings:
             or os.getenv("AI_GATEWAY_API_KEY", "").strip()
             or os.getenv("VERCEL_OIDC_TOKEN", "").strip()
         )
+    elif provider == "openrouter":
+        model_api_key = explicit_model_key or os.getenv("OPENROUTER_API_KEY", "").strip()
     else:
         model_api_key = explicit_model_key or legacy_api_key
     stepfun_key_fallback = model_api_key if provider == "stepfun" else ""

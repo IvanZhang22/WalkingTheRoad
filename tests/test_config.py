@@ -47,6 +47,21 @@ def test_vercel_provider_uses_automatic_oidc_token(monkeypatch: pytest.MonkeyPat
     assert settings.key_configured is True
 
 
+def test_openrouter_provider_uses_provider_specific_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MODEL_PROVIDER", "openrouter")
+    monkeypatch.setenv("MODEL_API_KEY", "")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-test-token")
+    monkeypatch.delenv("MODEL_BASE_URL", raising=False)
+    monkeypatch.delenv("MODEL_NAME", raising=False)
+
+    settings = get_settings()
+
+    assert settings.api_key == "openrouter-test-token"
+    assert settings.base_url == "https://openrouter.ai/api/v1"
+    assert settings.model == "openrouter/free"
+    assert settings.key_configured is True
+
+
 def test_rejects_unknown_asr_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ASR_PROVIDER", "unknown")
     with pytest.raises(ValueError, match="ASR_PROVIDER"):
