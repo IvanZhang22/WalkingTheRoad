@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import hashlib
 import json
@@ -18,6 +19,7 @@ from pathlib import Path
 
 OPENROUTER_AUTH_URL = "https://openrouter.ai/auth"
 OPENROUTER_EXCHANGE_URL = "https://openrouter.ai/api/v1/auth/keys"
+OPENROUTER_COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
@@ -26,7 +28,12 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
     completed = threading.Event()
 
     def do_GET(self) -> None:  # noqa: N802
-        query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path != "/callback":
+            self.send_response(204)
+            self.end_headers()
+            return
+        query = urllib.parse.parse_qs(parsed.query)
         type(self).code = query.get("code", [None])[0]
         type(self).error = query.get("error", [None])[0]
         ok = bool(type(self).code) and not type(self).error
@@ -90,6 +97,8 @@ def _run_vercel(repo: Path, arguments: list[str], stdin: str | None = None) -> N
         cwd=repo,
         input=stdin,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
         check=False,
     )
@@ -132,6 +141,91 @@ def _configure_vercel(repo: Path, key: str) -> None:
                 value,
             ],
         )
+
+
+def _smoke_openrouter(key: str) -> str:
+    payload = json.dumps(
+        {
+            "model": "openrouter/free",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Return JSON with ok=true. Do not include other fields.",
+                }
+            ],
+            "temperature": 0,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "xingxiaodao_live_smoke",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {"ok": {"type": "boolean", "const": True}},
+                        "required": ["ok"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        }
+    ).encode()
+    request = urllib.request.Request(
+        OPENROUTER_COMPLETIONS_URL,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            result = json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"OpenRouter 真实模型测试失败（HTTP {exc.code}）") from exc
+    try:
+        content = result["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+        model = str(result.get("model", "unknown"))
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("OpenRouter 真实模型测试返回格式无效") from exc
+    if parsed != {"ok": True}:
+        raise RuntimeError("OpenRouter 真实模型测试未通过结构化 JSON 校验")
+    return model
+
+
+def _smoke_project_client(key: str) -> None:
+    from app.config import Settings
+    from app.llm import OpenAICompatibleClient
+    from app.models import ResearchDiagnosis
+
+    async def run() -> None:
+        settings = Settings(
+            api_key=key,
+            base_url="https://openrouter.ai/api/v1",
+            model="openrouter/free",
+            thinking="disabled",
+            app_mode="live",
+            timeout_seconds=120,
+            max_upload_bytes=20 * 1024 * 1024,
+            max_document_chars=300_000,
+            provider="openrouter",
+        )
+        client = OpenAICompatibleClient(settings)
+        result = await client.complete(
+            node_id="live-smoke",
+            system_prompt="你是 JSON 接口测试助手，只按给定 Schema 输出。",
+            user_prompt="返回研究诊断对象，所有数组字段均为空数组。",
+            temperature=0,
+            json_model=ResearchDiagnosis,
+        )
+        parsed = json.loads(result)
+        if set(parsed) != set(ResearchDiagnosis.model_fields):
+            raise RuntimeError("项目模型客户端未返回完整 ResearchDiagnosis Schema")
+        if not all(value == [] for value in parsed.values()):
+            raise RuntimeError("项目模型客户端结构化 JSON 内容不符合测试要求")
+
+    asyncio.run(run())
 
 
 def _open_browser(url: str) -> None:
@@ -180,6 +274,10 @@ def main() -> int:
     key = _exchange_code(OAuthCallbackHandler.code, verifier)
     _configure_vercel(args.repo.resolve(), key)
     print("OpenRouter 已授权，密钥已安全写入 Vercel Production 和 Preview。", flush=True)
+    routed_model = _smoke_openrouter(key)
+    print(f"OpenRouter 真实模型测试通过（路由模型：{routed_model}）。", flush=True)
+    _smoke_project_client(key)
+    print("项目 OpenAICompatibleClient 结构化 JSON 测试通过。", flush=True)
     return 0
 
 
