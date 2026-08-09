@@ -155,6 +155,41 @@ async def test_pp_ocr_v6_uses_polygon_when_box_is_invalid(tmp_path: Path) -> Non
     assert result.segments[0].confidence is None
 
 
+async def test_default_limit_accepts_three_megabyte_png(tmp_path: Path) -> None:
+    ocr_requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal ocr_requests
+        if request.url.path.endswith("/token"):
+            return httpx.Response(
+                200, json={"access_token": "token-1", "expires_in": 3600}
+            )
+        ocr_requests += 1
+        assert len(request.content) > 4 * 1024 * 1024
+        return httpx.Response(
+            200,
+            json={
+                "page_result": [
+                    {
+                        "lines": ["三兆图片识别成功"],
+                        "probability": [0.99],
+                        "rec_boxes": [[1, 2, 201, 42]],
+                    }
+                ]
+            },
+        )
+
+    content = bytes(range(256)) * 12_110
+    result = await provider(
+        httpx.MockTransport(handler),
+        endpoint_path="/rest/2.0/ocr/v1/pp_ocrv5",
+    ).recognize(source(tmp_path, "large.png", content))
+
+    assert len(content) > 3_000_000
+    assert ocr_requests == 1
+    assert result.normalized_text == "三兆图片识别成功"
+
+
 async def test_scanned_pdf_is_submitted_page_by_page(tmp_path: Path) -> None:
     pdf_path = tmp_path / "scan.pdf"
     writer = PdfWriter()

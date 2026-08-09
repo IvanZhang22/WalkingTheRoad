@@ -25,6 +25,7 @@ from app.multimodal.providers.base import OCRProvider
 TOKEN_PATH = "/oauth/2.0/token"
 IMAGE_FORMATS = frozenset({"png", "jpg", "jpeg", "webp"})
 TOKEN_ERROR_CODES = frozenset({110, 111})
+PP_OCR_MAX_FORM_BYTES = 10_000_000
 
 
 class BaiduOCRProvider(OCRProvider):
@@ -39,7 +40,7 @@ class BaiduOCRProvider(OCRProvider):
         endpoint_path: str = "/rest/2.0/ocr/v1/general",
         timeout: float = 60,
         max_pages: int = 20,
-        max_form_bytes: int = 4 * 1024 * 1024,
+        max_form_bytes: int = PP_OCR_MAX_FORM_BYTES,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         if timeout <= 0 or max_pages <= 0 or max_form_bytes <= 0:
@@ -214,9 +215,11 @@ class BaiduOCRProvider(OCRProvider):
 
     def _validate_form_size(self, form: dict[str, str]) -> None:
         if len(urlencode(form).encode("ascii")) > self.max_form_bytes:
+            limit_mb = self.max_form_bytes / 1_000_000
             raise MaterialIngestError(
                 "XDW-OCR-FORM-SIZE",
-                "OCR 文件编码后超过百度接口请求大小限制。",
+                f"OCR 文件编码后超过百度接口 {limit_mb:g} MB 请求大小限制，"
+                "请压缩或缩小图片后重试。",
             )
 
     def _invalidate_token(self) -> None:
