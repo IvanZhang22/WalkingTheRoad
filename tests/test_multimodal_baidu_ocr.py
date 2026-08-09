@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import io
+import random
 from pathlib import Path
 from urllib.parse import parse_qs
 
 import httpx
 import pytest
+from PIL import Image
 from pypdf import PdfWriter
 
 from app.multimodal.errors import MaterialIngestError
@@ -155,7 +158,7 @@ async def test_pp_ocr_v6_uses_polygon_when_box_is_invalid(tmp_path: Path) -> Non
     assert result.segments[0].confidence is None
 
 
-async def test_default_limit_accepts_three_megabyte_png(tmp_path: Path) -> None:
+async def test_large_png_is_reencoded_before_upload(tmp_path: Path) -> None:
     ocr_requests = 0
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -165,7 +168,9 @@ async def test_default_limit_accepts_three_megabyte_png(tmp_path: Path) -> None:
                 200, json={"access_token": "token-1", "expires_in": 3600}
             )
         ocr_requests += 1
-        assert len(request.content) > 4 * 1024 * 1024
+        assert len(request.content) < 4 * 1024 * 1024
+        form = parse_qs(request.content.decode())
+        assert form["image"][0].startswith("/9j/")
         return httpx.Response(
             200,
             json={
@@ -179,13 +184,17 @@ async def test_default_limit_accepts_three_megabyte_png(tmp_path: Path) -> None:
             },
         )
 
-    content = bytes(range(256)) * 12_110
+    pixels = random.Random(20260809).randbytes(1200 * 900 * 3)
+    image = Image.frombytes("RGB", (1200, 900), pixels)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    content = buffer.getvalue()
     result = await provider(
         httpx.MockTransport(handler),
         endpoint_path="/rest/2.0/ocr/v1/pp_ocrv5",
     ).recognize(source(tmp_path, "large.png", content))
 
-    assert len(content) > 3_000_000
+    assert 3_000_000 < len(content) < 4_000_000
     assert ocr_requests == 1
     assert result.normalized_text == "三兆图片识别成功"
 

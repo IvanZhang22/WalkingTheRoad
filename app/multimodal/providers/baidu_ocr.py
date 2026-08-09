@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import math
 import time
 from pathlib import PurePosixPath
@@ -11,6 +12,7 @@ from typing import Any, cast
 from urllib.parse import urlencode
 
 import httpx
+from PIL import Image, UnidentifiedImageError
 from pypdf import PdfReader
 
 from app.multimodal.errors import MaterialIngestError
@@ -26,6 +28,8 @@ TOKEN_PATH = "/oauth/2.0/token"
 IMAGE_FORMATS = frozenset({"png", "jpg", "jpeg", "webp"})
 TOKEN_ERROR_CODES = frozenset({110, 111})
 PP_OCR_MAX_FORM_BYTES = 10_000_000
+IMAGE_REENCODE_THRESHOLD_BYTES = 1_500_000
+IMAGE_JPEG_QUALITY = 85
 
 
 class BaiduOCRProvider(OCRProvider):
@@ -76,6 +80,12 @@ class BaiduOCRProvider(OCRProvider):
         raw = await asyncio.to_thread(source.path.read_bytes)
         if not raw:
             raise MaterialIngestError("XDW-OCR-EMPTY-SOURCE", "OCR 输入文件为空。")
+        if source_format in IMAGE_FORMATS:
+            raw = await asyncio.to_thread(
+                _prepare_image_for_ocr,
+                raw,
+                source_format,
+            )
 
         page_count = 1
         if source_format == "pdf":
@@ -245,6 +255,50 @@ def _pdf_page_count(source: DownloadedFile) -> int:
     if count <= 0:
         raise MaterialIngestError("XDW-OCR-PDF", "扫描 PDF 没有可识别页面。")
     return count
+
+
+def _prepare_image_for_ocr(raw: bytes, source_format: str) -> bytes:
+    if (
+        len(raw) < IMAGE_REENCODE_THRESHOLD_BYTES
+        and source_format in {"png", "jpg", "jpeg"}
+    ):
+        return raw
+    try:
+        with Image.open(io.BytesIO(raw)) as image:
+            image.load()
+            if image.width < 15 or image.height < 15:
+                raise MaterialIngestError(
+                    "XDW-OCR-IMAGE-DIMENSIONS",
+                    "OCR 图片最短边必须至少为 15 像素。",
+                )
+            if image.width > 8192 or image.height > 8192:
+                raise MaterialIngestError(
+                    "XDW-OCR-IMAGE-DIMENSIONS",
+                    "OCR 图片最长边不能超过 8192 像素，请缩小图片后重试。",
+                )
+            if image.mode in {"RGBA", "LA"} or "transparency" in image.info:
+                rgba = image.convert("RGBA")
+                rgb = Image.new("RGB", rgba.size, "white")
+                rgb.paste(rgba, mask=rgba.getchannel("A"))
+            else:
+                rgb = image.convert("RGB")
+            output = io.BytesIO()
+            rgb.save(
+                output,
+                format="JPEG",
+                quality=IMAGE_JPEG_QUALITY,
+                optimize=True,
+                progressive=True,
+                subsampling=1,
+            )
+            return output.getvalue()
+    except MaterialIngestError:
+        raise
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise MaterialIngestError(
+            "XDW-OCR-IMAGE",
+            "OCR 图片无法读取或已损坏。",
+        ) from exc
 
 
 def _is_pp_ocr_endpoint(endpoint_path: str) -> bool:
