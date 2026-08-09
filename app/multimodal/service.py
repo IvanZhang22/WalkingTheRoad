@@ -364,7 +364,7 @@ def build_live_ingest_service(
     baidu_ocr_api_key: str = "",
     baidu_ocr_secret_key: str = "",
     baidu_ocr_base_url: str = "https://aip.baidubce.com",
-    baidu_ocr_endpoint_path: str = "/rest/2.0/ocr/v1/general",
+    baidu_ocr_endpoint_path: str = "/rest/2.0/ocr/v1/pp_ocrv5",
     baidu_ocr_timeout: float = 60,
     baidu_ocr_max_pages: int = 20,
 ) -> MaterialIngestService:

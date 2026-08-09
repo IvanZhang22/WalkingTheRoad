@@ -64,7 +64,7 @@ class Settings:
     baidu_ocr_api_key: str = ""
     baidu_ocr_secret_key: str = ""
     baidu_ocr_base_url: str = "https://aip.baidubce.com"
-    baidu_ocr_endpoint_path: str = "/rest/2.0/ocr/v1/general"
+    baidu_ocr_endpoint_path: str = "/rest/2.0/ocr/v1/pp_ocrv5"
     baidu_ocr_timeout_seconds: int = 60
     baidu_ocr_max_pages: int = 20
 
@@ -202,7 +202,9 @@ def get_settings() -> Settings:
         baidu_ocr_api_key=os.getenv("BAIDU_OCR_API_KEY", ""),
         baidu_ocr_secret_key=os.getenv("BAIDU_OCR_SECRET_KEY", ""),
         baidu_ocr_base_url=os.getenv("BAIDU_OCR_BASE_URL", "https://aip.baidubce.com").rstrip("/"),
-        baidu_ocr_endpoint_path=os.getenv("BAIDU_OCR_ENDPOINT_PATH", "/rest/2.0/ocr/v1/general"),
+        baidu_ocr_endpoint_path=os.getenv(
+            "BAIDU_OCR_ENDPOINT_PATH", "/rest/2.0/ocr/v1/pp_ocrv5"
+        ),
         baidu_ocr_timeout_seconds=_positive_int("BAIDU_OCR_TIMEOUT_SECONDS", 60),
         baidu_ocr_max_pages=_positive_int("BAIDU_OCR_MAX_PAGES", 20),
     )

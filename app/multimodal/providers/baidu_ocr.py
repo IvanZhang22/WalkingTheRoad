@@ -96,7 +96,12 @@ class BaiduOCRProvider(OCRProvider):
             token = await self._access_token(client)
             segments: list[ProviderSegment] = []
             for page in range(1, page_count + 1):
-                form = _request_form(raw, source_format, page)
+                form = _request_form(
+                    raw,
+                    source_format,
+                    page,
+                    pp_ocr=_is_pp_ocr_endpoint(self.endpoint_path),
+                )
                 self._validate_form_size(form)
                 payload = await self._post_ocr(client, token, form)
                 if _error_code(payload) in TOKEN_ERROR_CODES:
@@ -239,20 +244,46 @@ def _pdf_page_count(source: DownloadedFile) -> int:
     return count
 
 
-def _request_form(raw: bytes, source_format: str, page: int) -> dict[str, str]:
+def _is_pp_ocr_endpoint(endpoint_path: str) -> bool:
+    return PurePosixPath(endpoint_path).name.startswith("pp_ocr")
+
+
+def _request_form(
+    raw: bytes,
+    source_format: str,
+    page: int,
+    *,
+    pp_ocr: bool = False,
+) -> dict[str, str]:
     encoded = base64.b64encode(raw).decode("ascii")
-    form = {
-        "image" if source_format != "pdf" else "pdf_file": encoded,
-        "language_type": "CHN_ENG",
-        "detect_direction": "true",
-        "probability": "true",
-    }
+    form = {"image" if source_format != "pdf" else "pdf_file": encoded}
+    if pp_ocr:
+        form.update(
+            {
+                "useDocOrientationClassify": "true",
+                "useDocUnwarping": "false",
+                "useTextlineOrientation": "true",
+            }
+        )
+    else:
+        form.update(
+            {
+                "language_type": "CHN_ENG",
+                "detect_direction": "true",
+                "probability": "true",
+            }
+        )
     if source_format == "pdf":
         form["pdf_file_num"] = str(page)
     return form
 
 
-def _segments_from_response(payload: dict[str, Any], *, page: int | None) -> list[ProviderSegment]:
+def _segments_from_response(
+    payload: dict[str, Any], *, page: int | None
+) -> list[ProviderSegment]:
+    if "page_result" in payload:
+        return _segments_from_pp_ocr(payload, page=page)
+
     raw_items = payload.get("words_result")
     if not isinstance(raw_items, list):
         raise MaterialIngestError(
@@ -279,6 +310,101 @@ def _segments_from_response(payload: dict[str, Any], *, page: int | None) -> lis
             )
         )
     return segments
+
+
+def _segments_from_pp_ocr(
+    payload: dict[str, Any], *, page: int | None
+) -> list[ProviderSegment]:
+    raw_pages = payload.get("page_result")
+    if not isinstance(raw_pages, list):
+        raise MaterialIngestError(
+            "XDW-OCR-BAD-RESPONSE",
+            "百度 OCR 响应缺少页面结果数组。",
+            retryable=True,
+        )
+
+    segments: list[ProviderSegment] = []
+    for raw_page in raw_pages:
+        if not isinstance(raw_page, dict):
+            continue
+        lines = raw_page.get("lines")
+        probabilities = raw_page.get("probability")
+        boxes = raw_page.get("rec_boxes")
+        polygons = raw_page.get("rec_polys")
+        if not isinstance(lines, list):
+            continue
+        for index, text in enumerate(lines):
+            if not isinstance(text, str) or not text.strip():
+                continue
+            bbox = _indexed_bbox(boxes, polygons, index)
+            if bbox is None:
+                continue
+            confidence = None
+            if isinstance(probabilities, list) and index < len(probabilities):
+                confidence = _scalar_confidence(probabilities[index])
+            segments.append(
+                ProviderSegment(
+                    text=text.strip(),
+                    confidence=confidence,
+                    locator=MaterialLocator(page=page, bbox=bbox),
+                )
+            )
+    return segments
+
+
+def _indexed_bbox(
+    boxes: Any, polygons: Any, index: int
+) -> tuple[float, float, float, float] | None:
+    if isinstance(boxes, list) and index < len(boxes):
+        bbox = _bbox_from_box(boxes[index])
+        if bbox is not None:
+            return bbox
+    if isinstance(polygons, list) and index < len(polygons):
+        return _bbox_from_polygon(polygons[index])
+    return None
+
+
+def _bbox_from_box(value: Any) -> tuple[float, float, float, float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return None
+    if not all(_is_nonnegative_number(item) for item in value):
+        return None
+    left, top, right, bottom = (float(item) for item in value)
+    width = right - left
+    height = bottom - top
+    if width <= 0 or height <= 0:
+        return None
+    return (left, top, width, height)
+
+
+def _bbox_from_polygon(value: Any) -> tuple[float, float, float, float] | None:
+    if not isinstance(value, (list, tuple)) or len(value) < 3:
+        return None
+    points: list[tuple[float, float]] = []
+    for point in value:
+        if (
+            not isinstance(point, (list, tuple))
+            or len(point) != 2
+            or not all(_is_nonnegative_number(item) for item in point)
+        ):
+            return None
+        points.append((float(point[0]), float(point[1])))
+    left = min(point[0] for point in points)
+    top = min(point[1] for point in points)
+    right = max(point[0] for point in points)
+    bottom = max(point[1] for point in points)
+    if right <= left or bottom <= top:
+        return None
+    return (left, top, right - left, bottom - top)
+
+
+def _is_nonnegative_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+        and value >= 0
+    )
 
 
 def _bbox(location: dict[str, Any]) -> tuple[float, float, float, float] | None:
@@ -309,6 +435,17 @@ def _confidence(value: Any) -> float | None:
     ):
         return None
     return float(average)
+
+
+def _scalar_confidence(value: Any) -> float | None:
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+        or not 0 <= value <= 1
+    ):
+        return None
+    return float(value)
 
 
 def _error_code(payload: dict[str, Any]) -> int | None:

@@ -80,6 +80,81 @@ async def test_image_authenticates_and_normalizes_bbox_and_confidence(tmp_path: 
     assert requests[1][2] == "access_token=token-1"
 
 
+async def test_pp_ocr_v6_request_and_response_are_normalized(tmp_path: Path) -> None:
+    ocr_forms: list[dict[str, list[str]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        form = parse_qs(request.content.decode())
+        if request.url.path.endswith("/token"):
+            return httpx.Response(
+                200, json={"access_token": "token-1", "expires_in": 3600}
+            )
+        assert request.url.path.endswith("/pp_ocrv5")
+        ocr_forms.append(form)
+        return httpx.Response(
+            200,
+            json={
+                "page_result": [
+                    {
+                        "lines": ["就业服务入口", "需要反复寻找"],
+                        "probability": [0.98, 0.87],
+                        "rec_boxes": [[10, 20, 310, 60], [10, 70, 250, 105]],
+                        "rec_polys": [
+                            [[10, 20], [310, 20], [310, 60], [10, 60]],
+                            [[10, 70], [250, 70], [250, 105], [10, 105]],
+                        ],
+                    }
+                ]
+            },
+        )
+
+    result = await provider(
+        httpx.MockTransport(handler),
+        endpoint_path="/rest/2.0/ocr/v1/pp_ocrv5",
+    ).recognize(source(tmp_path, "notice.png", b"png-content"))
+
+    assert result.provider_model == "pp_ocrv5"
+    assert result.normalized_text == "就业服务入口\n需要反复寻找"
+    assert result.segments[0].locator.bbox == (10.0, 20.0, 300.0, 40.0)
+    assert result.segments[0].confidence == 0.98
+    assert result.segments[1].locator.bbox == (10.0, 70.0, 240.0, 35.0)
+    assert result.segments[1].confidence == 0.87
+    assert ocr_forms[0]["useDocOrientationClassify"] == ["true"]
+    assert ocr_forms[0]["useDocUnwarping"] == ["false"]
+    assert ocr_forms[0]["useTextlineOrientation"] == ["true"]
+    assert "language_type" not in ocr_forms[0]
+    assert "probability" not in ocr_forms[0]
+
+
+async def test_pp_ocr_v6_uses_polygon_when_box_is_invalid(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/token"):
+            return httpx.Response(
+                200, json={"access_token": "token-1", "expires_in": 3600}
+            )
+        return httpx.Response(
+            200,
+            json={
+                "page_result": [
+                    {
+                        "lines": ["倾斜文本"],
+                        "probability": [1.5],
+                        "rec_boxes": [[20, 10, 10, 30]],
+                        "rec_polys": [[[8, 10], [22, 8], [24, 30], [10, 32]]],
+                    }
+                ]
+            },
+        )
+
+    result = await provider(
+        httpx.MockTransport(handler),
+        endpoint_path="/rest/2.0/ocr/v1/pp_ocrv5",
+    ).recognize(source(tmp_path, "notice.png", b"png-content"))
+
+    assert result.segments[0].locator.bbox == (8.0, 8.0, 16.0, 24.0)
+    assert result.segments[0].confidence is None
+
+
 async def test_scanned_pdf_is_submitted_page_by_page(tmp_path: Path) -> None:
     pdf_path = tmp_path / "scan.pdf"
     writer = PdfWriter()
