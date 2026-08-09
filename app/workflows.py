@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import PurePosixPath
 from typing import Any
 
 from pydantic import BaseModel, ValidationError
@@ -29,7 +30,8 @@ from app.models import (
     WorkflowSpec,
 )
 from app.multimodal.evidence_linking import prepare_w3_material_bundle
-from app.multimodal.models import Material, MaterialSegment
+from app.multimodal.models import Material, MaterialSegment, MaterialStatus
+from app.multimodal.service import MaterialIngestService
 from app.project_prompts import PROJECT_WRITEBACK_SYSTEM, build_project_writeback_user_prompt
 from app.prompts import (
     W1_DIAGNOSIS_SYSTEM,
@@ -217,7 +219,8 @@ WORKFLOW_SPECS = [
                 label="上传材料",
                 kind="file",
                 required=True,
-                help="单文件，支持 TXT、MD、DOCX、文字型 PDF。",
+                help=("单文件：文档支持 TXT、MD、DOCX、文字型 PDF；音频支持 MP3、WAV、M4A、WEBM。"),
+                accept=".txt,.md,.docx,.pdf,.mp3,.wav,.m4a,.webm",
             ),
         ],
     ),
@@ -262,10 +265,17 @@ WORKFLOW_SPECS = [
 
 
 class WorkflowService:
-    def __init__(self, store: RunStore, llm: LLMClient, settings: Settings) -> None:
+    def __init__(
+        self,
+        store: RunStore,
+        llm: LLMClient,
+        settings: Settings,
+        material_ingestor: MaterialIngestService | None = None,
+    ) -> None:
         self.store = store
         self.llm = llm
         self.settings = settings
+        self.material_ingestor = material_ingestor
 
     async def analyze_materials(self, materials: list[Material], research_question: str) -> str:
         """从统一多模态材料直接执行 W3，并返回最终报告。"""
@@ -763,6 +773,21 @@ class WorkflowService:
         file_bytes: bytes | None,
         project_context: ProjectContext | None,
     ) -> None:
+        suffix = (
+            PurePosixPath(filename.replace("\\", "/")).suffix.lower()
+            if filename is not None
+            else ""
+        )
+        if suffix in {".mp3", ".wav", ".m4a", ".webm"}:
+            assert filename is not None
+            await self._run_w3_audio(
+                run_id,
+                fields,
+                filename,
+                file_bytes,
+                project_context,
+            )
+            return
         source_text = await self._input_node(
             run_id,
             "1I-3-1",
@@ -788,6 +813,71 @@ class WorkflowService:
             source_text,
             material_metadata=material_metadata,
             segment_index=None,
+            project_context=project_context,
+        )
+
+    async def _run_w3_audio(
+        self,
+        run_id: str,
+        fields: MaterialAnalysisInput,
+        filename: str,
+        file_bytes: bytes | None,
+        project_context: ProjectContext | None,
+    ) -> None:
+        index = await self.store.begin_node(run_id, "1I-3-1", "输入-音频材料分析-1")
+        try:
+            if file_bytes is None:
+                raise ValueError("没有收到上传音频。")
+            if self.material_ingestor is None:
+                raise ValueError("网页音频接入服务尚未配置。")
+            material = await self.material_ingestor.ingest_upload(filename, file_bytes)
+            if material.status is MaterialStatus.failed:
+                messages = "；".join(issue.message for issue in material.issues)
+                raise ValueError(f"音频处理失败：{messages or '识别服务没有返回可用内容。'}")
+            bundle = prepare_w3_material_bundle(
+                [material], max_characters=self.settings.max_document_chars
+            )
+            await self.store.complete_node(
+                run_id,
+                index,
+                {
+                    **fields.model_dump(),
+                    "source_file": {"filename": filename, "size_bytes": len(file_bytes)},
+                    "material": {
+                        "material_id": material.material_id,
+                        "modality": material.modality.value,
+                        "status": material.status.value,
+                        "provider_name": material.provider_name,
+                        "provider_model": material.provider_model,
+                        "segment_count": len(material.segments),
+                        "automatic_segment_count": sum(
+                            segment.automatic_evidence_use for segment in material.segments
+                        ),
+                    },
+                    "source_text_length": bundle.character_count,
+                },
+            )
+        except Exception as exc:
+            await self.store.fail_node(run_id, index, str(exc))
+            raise
+
+        await self._run_w3_source(
+            run_id,
+            fields,
+            bundle.source_text,
+            material_metadata={
+                "source_id": fields.source_id,
+                "display_name": filename,
+                "source_type": fields.source_type,
+                "source_context": fields.source_context,
+                "size_bytes": len(file_bytes),
+                "character_count": bundle.character_count,
+                "sha256": material.source_fingerprint,
+                "material_id": material.material_id,
+                "provider_name": material.provider_name,
+                "provider_model": material.provider_model,
+            },
+            segment_index=bundle.segment_index,
             project_context=project_context,
         )
 

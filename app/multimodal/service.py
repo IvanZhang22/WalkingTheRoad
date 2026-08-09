@@ -8,11 +8,17 @@ from pathlib import PurePosixPath
 from urllib.parse import unquote, urlsplit, urlunsplit
 
 from app.multimodal.contracts import (
+    AUDIO_FORMATS,
     IMAGE_FORMATS,
     FileContentPart,
     InputAudioContentPart,
 )
-from app.multimodal.downloader import MaterialDownloader, MockDownloader, SafeDownloader
+from app.multimodal.downloader import (
+    MaterialDownloader,
+    MockDownloader,
+    SafeDownloader,
+    stage_uploaded_file,
+)
 from app.multimodal.errors import MaterialIngestError
 from app.multimodal.models import (
     DownloadedFile,
@@ -45,6 +51,7 @@ class MaterialIngestService:
         document_parser: DocumentParser,
         confidence_threshold: float = 0.8,
         enabled_modalities: frozenset[MaterialModality] | None = None,
+        max_upload_bytes: int = 20 * 1024 * 1024,
     ) -> None:
         if not 0 <= confidence_threshold <= 1:
             raise ValueError("confidence_threshold 必须位于 0 到 1 之间")
@@ -53,6 +60,7 @@ class MaterialIngestService:
         self.ocr = ocr
         self.document_parser = document_parser
         self.confidence_threshold = confidence_threshold
+        self.max_upload_bytes = max_upload_bytes
         self.enabled_modalities = (
             frozenset(MaterialModality) if enabled_modalities is None else enabled_modalities
         )
@@ -61,6 +69,62 @@ class MaterialIngestService:
         """并发处理附件；单个失败不会取消其它附件。"""
 
         return list(await asyncio.gather(*(self._ingest_isolated(item) for item in attachments)))
+
+    async def ingest_upload(self, filename: str, data: bytes) -> Material:
+        """处理网页 multipart 直传；原始字节只存在于单次请求的临时文件中。"""
+
+        suffix = PurePosixPath(filename.strip().replace("\\", "/")).suffix.lower().lstrip(".")
+        if suffix in AUDIO_FORMATS:
+            modality = MaterialModality.audio
+        elif suffix in IMAGE_FORMATS:
+            modality = MaterialModality.image
+        else:
+            modality = MaterialModality.document
+        fingerprint = hashlib.sha256(data).hexdigest()
+        material_id = f"MAT_{fingerprint[:12].upper()}"
+        downloaded = None
+        try:
+            if modality not in self.enabled_modalities:
+                raise MaterialIngestError(
+                    "XDW-MM-PROVIDER-NOT-CONFIGURED",
+                    f"{modality.value} 材料的真实 Provider 尚未配置。",
+                )
+            downloaded = stage_uploaded_file(
+                filename,
+                data,
+                max_bytes=self.max_upload_bytes,
+            )
+            result = await self._call_provider(downloaded, modality)
+            return self._normalize_result(
+                material_id=material_id,
+                fingerprint=fingerprint,
+                filename=downloaded.filename,
+                modality=modality,
+                result=result,
+            )
+        except MaterialIngestError as exc:
+            issue = MaterialIssue(
+                code=exc.code,
+                message=exc.public_message,
+                retryable=exc.retryable,
+            )
+        except Exception:
+            issue = MaterialIssue(
+                code="XDW-MM-UNEXPECTED",
+                message="材料处理失败；服务端没有返回可用内容。",
+                retryable=False,
+            )
+        finally:
+            if downloaded is not None:
+                downloaded.path.unlink(missing_ok=True)
+        return Material(
+            material_id=material_id,
+            source_fingerprint=fingerprint,
+            filename=PurePosixPath(filename.strip().replace("\\", "/")).name or "uploaded-file",
+            modality=modality,
+            status=MaterialStatus.failed,
+            issues=[issue],
+        )
 
     async def _ingest_isolated(self, attachment: AttachmentPart) -> Material:
         material_id, fingerprint = _material_identity(attachment)
@@ -272,6 +336,7 @@ def build_document_ingest_service(
         ocr=UnavailableOCRProvider(),
         document_parser=LocalDocumentParser(max_document_chars=max_document_chars),
         enabled_modalities=frozenset({MaterialModality.document}),
+        max_upload_bytes=max_upload_bytes,
     )
 
 
@@ -351,6 +416,7 @@ def build_live_ingest_service(
         ocr=ocr,
         document_parser=LocalDocumentParser(max_document_chars=max_document_chars),
         enabled_modalities=frozenset(enabled_modalities),
+        max_upload_bytes=max_upload_bytes,
     )
 
 

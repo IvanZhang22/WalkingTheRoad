@@ -25,7 +25,17 @@ def settings() -> Settings:
 def test_health_workflow_run_and_markdown_download() -> None:
     with TestClient(create_app(settings=settings(), llm=MockLLMClient())) as client:
         assert client.get("/api/health").status_code == 200
-        assert len(client.get("/api/workflows").json()) == 4
+        workflows = client.get("/api/workflows").json()
+        assert len(workflows) == 4
+        w3_file = next(
+            field
+            for workflow in workflows
+            if workflow["id"] == "w3"
+            for field in workflow["fields"]
+            if field["name"] == "source_file"
+        )
+        assert ".m4a" in w3_file["accept"]
+        assert "M4A" in w3_file["help"]
         response = client.post(
             "/api/runs",
             data={
@@ -61,9 +71,10 @@ def test_intent_route_recommends_without_creating_a_run() -> None:
 def test_intent_route_rejects_empty_or_extra_input() -> None:
     with TestClient(create_app(settings=settings(), llm=MockLLMClient())) as client:
         assert client.post("/api/route", json={"message": "   "}).status_code == 422
-        assert client.post(
-            "/api/route", json={"message": "研究设计", "workflow_id": "w1"}
-        ).status_code == 422
+        assert (
+            client.post("/api/route", json={"message": "研究设计", "workflow_id": "w1"}).status_code
+            == 422
+        )
 
 
 def test_intent_route_returns_503_when_model_is_unavailable() -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from typing import TypeVar
 
 import httpx
@@ -159,4 +160,70 @@ def test_audio_url_runs_real_provider_shape_through_verified_w3_in_same_endpoint
     assert "我找了很久才找到就业服务入口。" in content
     assert "must-not-echo" not in content
     assert signed_url not in content
+    assert llm.saw_verified_location is True
+
+
+def test_browser_m4a_upload_runs_deepgram_and_verified_w3() -> None:
+    audio = b"\x00\x00\x00\x18ftypM4A \x00\x00\x00\x00demo-audio"
+
+    def deepgram(request: httpx.Request) -> httpx.Response:
+        assert request.headers["content-type"] == "audio/mp4"
+        assert request.content == audio
+        return httpx.Response(
+            200,
+            json={
+                "metadata": {"model_info": {"id": {"name": "nova-3"}}},
+                "results": {
+                    "utterances": [
+                        {
+                            "start": 0.5,
+                            "end": 2.8,
+                            "confidence": 0.96,
+                            "transcript": "我找了很久才找到就业服务入口。",
+                            "speaker": 0,
+                            "words": [],
+                        }
+                    ]
+                },
+            },
+        )
+
+    ingest = MaterialIngestService(
+        downloader=MockDownloader(),
+        asr=DeepgramASRProvider(api_key="test-key", transport=httpx.MockTransport(deepgram)),
+        ocr=MockOCRProvider(),
+        document_parser=MockDocumentParser(),
+    )
+    llm = FullLoopLLM()
+    app = create_app(settings=settings(), llm=llm, material_ingestor=ingest)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/runs",
+            data={
+                "workflow_id": "w3",
+                "fields_json": json.dumps(
+                    {
+                        "research_question": "学生如何理解就业服务入口的可达性？",
+                        "source_id": "DEMO_AUDIO_001",
+                        "source_type": "单份访谈",
+                        "source_context": "本地 M4A 上传验收",
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+            files={"source_file": ("interview.m4a", audio, "audio/mp4")},
+        )
+        assert response.status_code == 202
+        run_id = response.json()["run_id"]
+        for _ in range(100):
+            run = client.get(f"/api/runs/{run_id}").json()
+            if run["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.01)
+
+    assert run["status"] == "succeeded", run.get("error")
+    input_trace = next(trace for trace in run["traces"] if trace["legacy_node_id"] == "1I-3-1")
+    assert input_trace["output"]["source_file"]["filename"] == "interview.m4a"
+    assert input_trace["output"]["material"]["provider_name"] == "deepgram"
+    assert "质性材料分析报告" in run["final_markdown"]
     assert llm.saw_verified_location is True

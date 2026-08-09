@@ -84,6 +84,43 @@ async def test_maps_utterances_to_timestamped_confident_segments(tmp_path: Path)
     assert result.segments[1].speaker == "speaker_1"
 
 
+async def test_uploads_local_audio_bytes_when_source_url_is_absent(tmp_path: Path) -> None:
+    local = source(tmp_path)
+    local.source_url = None
+    local.path.write_bytes(b"local-m4a-bytes")
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["content_type"] = request.headers.get("content-type")
+        captured["body"] = request.content
+        return httpx.Response(
+            200,
+            json={
+                "results": {
+                    "utterances": [
+                        {
+                            "start": 0.1,
+                            "end": 1.0,
+                            "confidence": 0.95,
+                            "transcript": "本地音频真实转写",
+                            "words": [],
+                        }
+                    ]
+                }
+            },
+        )
+
+    result = await DeepgramASRProvider(
+        api_key="test-key", transport=httpx.MockTransport(handler)
+    ).transcribe(local)
+
+    assert captured == {
+        "content_type": "audio/mp4",
+        "body": b"local-m4a-bytes",
+    }
+    assert result.normalized_text == "本地音频真实转写"
+
+
 async def test_falls_back_to_channel_alternative(tmp_path: Path) -> None:
     response = {
         "metadata": {"duration": 2.0},
@@ -114,16 +151,10 @@ async def test_falls_back_to_channel_alternative(tmp_path: Path) -> None:
     assert "DEEPGRAM_UTTERANCES_MISSING" in result.warnings
 
 
-async def test_missing_key_missing_url_and_empty_result_fail_closed(tmp_path: Path) -> None:
+async def test_missing_key_and_empty_result_fail_closed(tmp_path: Path) -> None:
     with pytest.raises(MaterialIngestError) as missing_key:
         await DeepgramASRProvider(api_key="").transcribe(source(tmp_path))
     assert missing_key.value.code == "XDW-ASR-NOT-CONFIGURED"
-
-    no_url = source(tmp_path)
-    no_url.source_url = None
-    with pytest.raises(MaterialIngestError) as missing_url:
-        await DeepgramASRProvider(api_key="test").transcribe(no_url)
-    assert missing_url.value.code == "XDW-ASR-SOURCE-URL"
 
     empty = DeepgramASRProvider(
         api_key="test",

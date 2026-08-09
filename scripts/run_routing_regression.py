@@ -34,16 +34,8 @@ async def main(live: bool) -> int:
         error = ""
         try:
             result = await IntentRouter(llm).route(case["message"])
-            actual = (
-                result.recommended_workflow.value
-                if hasattr(result.recommended_workflow, "value")
-                else str(result.recommended_workflow)
-            )
-            secondary = (
-                result.possible_secondary_workflow.value
-                if result.possible_secondary_workflow is not None
-                else ""
-            )
+            actual = str(result.recommended_workflow)
+            secondary = str(result.possible_secondary_workflow or "")
             reason = result.reason
             confidence = result.confidence.value
         except Exception as exc:

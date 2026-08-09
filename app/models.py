@@ -273,6 +273,7 @@ class WorkflowField(BaseModel):
     kind: Literal["text", "select", "file"]
     required: bool = False
     help: str = ""
+    accept: str = ""
     options: list[dict[str, str]] = Field(default_factory=list)
     show_when: dict[str, str] | None = None
 

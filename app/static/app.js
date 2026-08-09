@@ -435,7 +435,7 @@ function createField(field, reuse, projectPrefill = {}) {
   } else if (field.kind === "file") {
     control = document.createElement("input");
     control.type = "file";
-    control.accept = ".txt,.md,.docx,.pdf";
+    control.accept = field.accept || ".txt,.md,.docx,.pdf";
   } else {
     control = document.createElement("textarea");
   }

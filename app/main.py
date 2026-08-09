@@ -72,9 +72,6 @@ def create_app(
     app.state.store = store
     app.state.llm = active_llm
     app.state.llm_error = llm_error
-    app.state.workflow_service = (
-        WorkflowService(store, active_llm, active_settings) if active_llm is not None else None
-    )
     multimodal_provider = "injected" if material_ingestor is not None else "live"
     if material_ingestor is not None:
         app.state.material_ingestor = material_ingestor
@@ -109,6 +106,16 @@ def create_app(
             baidu_ocr_timeout=active_settings.baidu_ocr_timeout_seconds,
             baidu_ocr_max_pages=active_settings.baidu_ocr_max_pages,
         )
+    app.state.workflow_service = (
+        WorkflowService(
+            store,
+            active_llm,
+            active_settings,
+            material_ingestor=app.state.material_ingestor,
+        )
+        if active_llm is not None
+        else None
+    )
     app.state.multimodal_provider = multimodal_provider
     app.state.tasks = set()
 

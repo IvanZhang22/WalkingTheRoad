@@ -266,6 +266,60 @@ class MockDownloader(MaterialDownloader):
         )
 
 
+def stage_uploaded_file(
+    filename: str,
+    data: bytes,
+    *,
+    max_bytes: int,
+    tmp_dir: str | Path | None = None,
+) -> DownloadedFile:
+    """校验浏览器直传文件并暂存，供 ASR/OCR/文档 Provider 统一消费。"""
+
+    normalized = filename.strip().replace("\\", "/")
+    if (
+        not normalized
+        or len(normalized) > 300
+        or "\x00" in normalized
+        or PurePosixPath(normalized).name != normalized
+        or normalized in {".", ".."}
+    ):
+        raise MaterialIngestError("XDW-FILE-NAME", "上传文件名无效。")
+    suffix = PurePosixPath(normalized).suffix.lower().lstrip(".")
+    if suffix not in SUPPORTED_MIME:
+        raise MaterialIngestError("XDW-FILE-TYPE", "当前上传文件类型不受支持。")
+    if not data:
+        raise MaterialIngestError("XDW-FILE-EMPTY", "上传文件为空。")
+    if len(data) > max_bytes:
+        raise MaterialIngestError("XDW-HTTP-SIZE", "附件超过允许的大小限制。")
+
+    destination = Path(tmp_dir) if tmp_dir is not None else Path(tempfile.gettempdir())
+    destination.mkdir(parents=True, exist_ok=True)
+    file_descriptor, raw_path = tempfile.mkstemp(
+        prefix="xdw_upload_", suffix=f".{suffix}", dir=destination
+    )
+    os.close(file_descriptor)
+    path = Path(raw_path)
+    try:
+        path.write_bytes(data)
+        _validate_file_type(
+            path,
+            suffix,
+            "",
+            max_uncompressed_bytes=min(max_bytes * 10, 200 * 1024 * 1024),
+        )
+        return DownloadedFile(
+            path=path,
+            source_format=suffix,
+            filename=normalized,
+            mime_type=PREFERRED_MIME[suffix],
+            size_bytes=len(data),
+            sha256=hashlib.sha256(data).hexdigest(),
+        )
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+
+
 def _source_fields(source: AttachmentPart) -> tuple[str, str, str]:
     if isinstance(source, InputAudioContentPart):
         url = source.input_audio.url

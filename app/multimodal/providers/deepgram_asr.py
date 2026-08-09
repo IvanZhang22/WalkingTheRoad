@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 from typing import Any
 
@@ -47,11 +48,6 @@ class DeepgramASRProvider(ASRProvider):
                 "XDW-ASR-NOT-CONFIGURED",
                 "Deepgram ASR API Key 尚未配置。",
             )
-        if not source.source_url:
-            raise MaterialIngestError(
-                "XDW-ASR-SOURCE-URL",
-                "音频缺少可供识别服务访问的公网地址。",
-            )
         params = {
             "model": self.model,
             "language": self.language,
@@ -60,21 +56,26 @@ class DeepgramASRProvider(ASRProvider):
             "punctuate": "true",
             "smart_format": "true",
         }
+        headers = {
+            "Authorization": f"Token {self.api_key}",
+            "User-Agent": "Xingxiaodao-Agent/2.2",
+        }
+        request_body: dict[str, Any]
+        if source.source_url:
+            headers["Content-Type"] = "application/json"
+            request_body = {"json": {"url": source.source_url}}
+        else:
+            headers["Content-Type"] = source.mime_type
+            request_body = {"content": await asyncio.to_thread(source.path.read_bytes)}
         try:
             async with httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=httpx.Timeout(self.timeout),
                 transport=self.transport,
                 trust_env=False,
-                headers={
-                    "Authorization": f"Token {self.api_key}",
-                    "Content-Type": "application/json",
-                    "User-Agent": "Xingxiaodao-Agent/2.2",
-                },
+                headers=headers,
             ) as client:
-                response = await client.post(
-                    "/v1/listen", params=params, json={"url": source.source_url}
-                )
+                response = await client.post("/v1/listen", params=params, **request_body)
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             raise MaterialIngestError(
                 "XDW-ASR-TRANSPORT",
