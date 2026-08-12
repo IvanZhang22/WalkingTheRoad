@@ -100,6 +100,7 @@ class MaterialIngestService:
                 fingerprint=fingerprint,
                 filename=downloaded.filename,
                 modality=modality,
+                size_bytes=downloaded.size_bytes,
                 result=result,
             )
         except MaterialIngestError as exc:
@@ -136,6 +137,24 @@ class MaterialIngestService:
                     "XDW-MM-PROVIDER-NOT-CONFIGURED",
                     f"{modality.value} 材料的真实 Provider 尚未配置。",
                 )
+            if (
+                modality is MaterialModality.audio
+                and isinstance(attachment, InputAudioContentPart)
+                and isinstance(self.asr, DeepgramASRProvider)
+            ):
+                await self.downloader.validate_source_url(attachment)
+                result = await self.asr.transcribe_url(
+                    url=attachment.input_audio.url,
+                    filename=filename,
+                )
+                return self._normalize_result(
+                    material_id=material_id,
+                    fingerprint=fingerprint,
+                    filename=filename,
+                    modality=modality,
+                    size_bytes=0,
+                    result=result,
+                )
             downloaded = await self.downloader.download(attachment)
             result = await self._call_provider(downloaded, modality)
             return self._normalize_result(
@@ -143,6 +162,7 @@ class MaterialIngestService:
                 fingerprint=fingerprint,
                 filename=filename,
                 modality=modality,
+                size_bytes=downloaded.size_bytes,
                 result=result,
             )
         except MaterialIngestError as exc:
@@ -190,6 +210,7 @@ class MaterialIngestService:
         fingerprint: str,
         filename: str,
         modality: MaterialModality,
+        size_bytes: int,
         result: ProviderResult,
     ) -> Material:
         segments = [
@@ -205,6 +226,7 @@ class MaterialIngestService:
                 status=MaterialStatus.failed,
                 provider_name=result.provider_name,
                 provider_model=result.provider_model,
+                size_bytes=size_bytes,
                 warnings=result.warnings,
                 issues=[
                     MaterialIssue(
@@ -234,6 +256,7 @@ class MaterialIngestService:
             automatic_text=automatic_text,
             provider_name=result.provider_name,
             provider_model=result.provider_model,
+            size_bytes=size_bytes,
             segments=segments,
             automatic_evidence_use=bool(usable),
             review_queue=review_queue,
@@ -331,6 +354,7 @@ def build_document_ingest_service(
             connect_timeout=connect_timeout,
             read_timeout=read_timeout,
             max_redirects=max_redirects,
+            trusted_public_hosts=frozenset({"*.public.blob.vercel-storage.com"}),
         ),
         asr=UnavailableASRProvider(),
         ocr=UnavailableOCRProvider(),
@@ -411,6 +435,7 @@ def build_live_ingest_service(
             connect_timeout=connect_timeout,
             read_timeout=read_timeout,
             max_redirects=max_redirects,
+            trusted_public_hosts=frozenset({"*.public.blob.vercel-storage.com"}),
         ),
         asr=asr,
         ocr=ocr,

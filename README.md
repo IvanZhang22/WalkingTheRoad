@@ -1,6 +1,6 @@
-# 行小道本地 Agent v2.2.0
+# 行小道本地 Agent v2.2.1
 
-v2.2.0 在唯一的 OpenAI 兼容入口中加入文本、普通文档、音频、图片和扫描 PDF：安全下载后分别进入本地解析、阶跃/Deepgram ASR 或百度 OCR，再按片段置信度和定位门控执行 W3 证据提取、确定性引文核验和主题生成。视频不在本版范围内。
+v2.2.1 在唯一的 OpenAI 兼容入口中加入文本、普通文档、音频、图片和扫描 PDF：安全下载后分别进入本地解析、阶跃/Deepgram ASR 或百度 OCR，再按片段置信度和定位门控执行 W3 证据提取、确定性引文核验和主题生成。网页上传超过 4 MB 时可自动直传 Vercel Blob，绕过 Function 的 4.5 MB 请求体限制。视频不在本版范围内。
 
 Vercel 可用于 Preview 和直接 API 验收；既有实测表明清小搭服务端无法访问境外 Vercel，因此本版不宣称已在清小搭上线。正式清小搭演示仍需 v2.3 的国内可访问部署地址。
 
@@ -121,9 +121,15 @@ DEEPGRAM_API_KEY=你的Deepgram密钥
 OCR_PROVIDER=baidu
 BAIDU_OCR_API_KEY=你的百度OCR_AK
 BAIDU_OCR_SECRET_KEY=你的百度OCR_SK
+
+# 大文件网页上传：在 Vercel Storage 中连接 Public Blob Store 后自动注入
+BLOB_READ_WRITE_TOKEN=vercel_blob_rw_...
+BLOB_CLEANUP_ENABLED=true
 ```
 
 Vercel OIDC 只负责文本模型；Deepgram 和百度密钥仍需单独配置。所有长期密钥只放服务端 `.env` 或部署平台环境变量。
+
+Vercel Function 单次请求体仍只有 4.5 MB。网页对 4 MB 以内文件沿用 multipart 直传；更大的文件先由浏览器直接传到 Public Blob Store，随后后端只接收 URL。分析任务结束后默认删除临时 Blob。当前应用没有用户登录体系，因此不要把上传令牌接口暴露给不受信任的公开流量；团队演示应限制访问，并只上传已授权、脱敏材料。
 
 开发时可将 `APP_MODE=mock`，这样不会调用真实 API，也不会产生费用。模拟结果只能用于检查工程链路，不能评价 Agent 的研究能力。
 

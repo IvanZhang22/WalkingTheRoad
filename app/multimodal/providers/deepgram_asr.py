@@ -67,6 +67,43 @@ class DeepgramASRProvider(ASRProvider):
         else:
             headers["Content-Type"] = source.mime_type
             request_body = {"content": await asyncio.to_thread(source.path.read_bytes)}
+        return await self._request(params=params, headers=headers, request_body=request_body)
+
+    async def transcribe_url(self, *, url: str, filename: str) -> ProviderResult:
+        """让 Deepgram 直接拉取已校验的临时 Blob，避免 Function 再下载大文件。"""
+
+        if not self.api_key:
+            raise MaterialIngestError(
+                "XDW-ASR-NOT-CONFIGURED",
+                "Deepgram ASR API Key 尚未配置。",
+            )
+        suffix = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+        if suffix not in {"mp3", "wav", "m4a", "webm"}:
+            raise MaterialIngestError("XDW-FILE-TYPE", "当前音频文件类型不受支持。")
+        return await self._request(
+            params={
+                "model": self.model,
+                "language": self.language,
+                "utterances": "true",
+                "diarize_model": self.diarize_model,
+                "punctuate": "true",
+                "smart_format": "true",
+            },
+            headers={
+                "Authorization": f"Token {self.api_key}",
+                "User-Agent": "Xingxiaodao-Agent/2.2",
+                "Content-Type": "application/json",
+            },
+            request_body={"json": {"url": url}},
+        )
+
+    async def _request(
+        self,
+        *,
+        params: dict[str, str],
+        headers: dict[str, str],
+        request_body: dict[str, Any],
+    ) -> ProviderResult:
         try:
             async with httpx.AsyncClient(
                 base_url=self.base_url,

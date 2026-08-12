@@ -9,6 +9,7 @@ const state = {
   projectStore: null,
   runProjectSnapshot: null,
   stageOverrideRequired: false,
+  health: null,
 };
 
 const chat = document.querySelector("#chat");
@@ -57,6 +58,7 @@ async function bootstrap() {
       fetchJSON("/api/workflows"),
     ]);
     state.workflows = workflows;
+    state.health = health;
     renderHealth(health);
     renderMenus();
   } catch (error) {
@@ -513,7 +515,30 @@ async function submitRun(event) {
     payload.append("workflow_id", state.selected.id);
     payload.append("fields_json", JSON.stringify(fields));
     if (activeProject) payload.append("project_context_json", JSON.stringify(state.projectStore.context()));
-    if (sourceFile) payload.append("source_file", sourceFile);
+    if (sourceFile) {
+      const directUploadLimit = 4 * 1024 * 1024;
+      if (sourceFile.size > directUploadLimit) {
+        if (!state.health?.large_upload_configured) {
+          throw new Error(
+            "文件超过 Vercel 4.5 MB 直传上限，且大文件存储尚未配置。请连接 Vercel Public Blob Store 后重试。",
+          );
+        }
+        const safeName = sourceFile.name.replace(/[^\p{L}\p{N}._-]+/gu, "_").slice(-180);
+        const pathname = `xingxiaodao-uploads/${crypto.randomUUID()}-${safeName}`;
+        const progress = runningBubble.querySelector(".progress-text");
+        const blob = await window.XingxiaodaoBlob.upload(sourceFile, {
+          pathname,
+          onProgress: (percentage) => {
+            if (progress) progress.textContent = `正在上传大文件到临时存储……${percentage}%`;
+          },
+        });
+        payload.append("source_url", blob.url);
+        payload.append("source_filename", sourceFile.name);
+        if (progress) progress.textContent = "上传完成，正在创建分析任务……";
+      } else {
+        payload.append("source_file", sourceFile);
+      }
+    }
     const response = await fetch("/api/runs", { method: "POST", body: payload });
     if (!response.ok) throw new Error(await errorFromResponse(response));
     const created = await response.json();
