@@ -32,6 +32,13 @@ def _non_negative_int(name: str, default: int) -> int:
     return value
 
 
+def _boolean(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "true" if default else "false").strip().lower()
+    if raw not in {"true", "false", "1", "0", "yes", "no"}:
+        raise ValueError(f"环境变量 {name} 必须是 true 或 false")
+    return raw in {"true", "1", "yes"}
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     api_key: str
@@ -67,6 +74,8 @@ class Settings:
     baidu_ocr_endpoint_path: str = "/rest/2.0/ocr/v1/pp_ocrv5"
     baidu_ocr_timeout_seconds: int = 60
     baidu_ocr_max_pages: int = 20
+    blob_read_write_token: str = ""
+    blob_cleanup_enabled: bool = True
 
     @property
     def key_configured(self) -> bool:
@@ -95,6 +104,10 @@ class Settings:
     @property
     def baidu_ocr_key_configured(self) -> bool:
         return bool(self.baidu_ocr_api_key.strip() and self.baidu_ocr_secret_key.strip())
+
+    @property
+    def blob_upload_configured(self) -> bool:
+        return self.blob_read_write_token.strip().startswith("vercel_blob_rw_")
 
 
 def get_settings() -> Settings:
@@ -174,7 +187,7 @@ def get_settings() -> Settings:
         thinking=thinking,
         app_mode=app_mode,
         timeout_seconds=_positive_int("MODEL_TIMEOUT_SECONDS", 120),
-        max_upload_bytes=_positive_int("MAX_UPLOAD_MB", 20) * 1024 * 1024,
+        max_upload_bytes=_positive_int("MAX_UPLOAD_MB", 100) * 1024 * 1024,
         max_document_chars=_positive_int("MAX_DOCUMENT_CHARS", 300_000),
         provider=provider,
         agent_api_key=os.getenv("AGENT_API_KEY", ""),
@@ -207,4 +220,6 @@ def get_settings() -> Settings:
         ),
         baidu_ocr_timeout_seconds=_positive_int("BAIDU_OCR_TIMEOUT_SECONDS", 60),
         baidu_ocr_max_pages=_positive_int("BAIDU_OCR_MAX_PAGES", 20),
+        blob_read_write_token=os.getenv("BLOB_READ_WRITE_TOKEN", ""),
+        blob_cleanup_enabled=_boolean("BLOB_CLEANUP_ENABLED", True),
     )

@@ -129,3 +129,30 @@ def test_run_rejects_project_context_with_raw_text() -> None:
         )
         assert response.status_code == 400
         assert "项目卡上下文无效" in response.json()["detail"]
+
+
+def test_blob_token_endpoint_reports_configuration_and_requires_intent_header() -> None:
+    app_settings = settings()
+    with TestClient(create_app(settings=app_settings, llm=MockLLMClient())) as client:
+        assert client.get("/api/health").json()["large_upload_configured"] is False
+        response = client.post(
+            "/api/blob/upload-token",
+            json={
+                "type": "blob.generate-client-token",
+                "payload": {
+                    "pathname": (
+                        "xingxiaodao-uploads/"
+                        "12345678-1234-1234-1234-123456789abc-recording.mp3"
+                    ),
+                    "clientPayload": json.dumps(
+                        {
+                            "filename": "recording.mp3",
+                            "sizeBytes": 18_900_000,
+                            "contentType": "audio/mpeg",
+                        }
+                    ),
+                    "multipart": False,
+                },
+            },
+        )
+        assert response.status_code == 403

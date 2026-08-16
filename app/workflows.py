@@ -29,6 +29,7 @@ from app.models import (
     WorkflowId,
     WorkflowSpec,
 )
+from app.multimodal.contracts import FileContentPart, InputAudioContentPart
 from app.multimodal.evidence_linking import prepare_w3_material_bundle
 from app.multimodal.models import Material, MaterialSegment, MaterialStatus
 from app.multimodal.service import MaterialIngestService
@@ -348,6 +349,7 @@ class WorkflowService:
         filename: str | None,
         file_bytes: bytes | None,
         project_context: ProjectContext | None = None,
+        source_url: str | None = None,
     ) -> None:
         await self.store.set_running(run_id)
         try:
@@ -360,7 +362,14 @@ class WorkflowService:
                 await self._run_w2(run_id, w2_fields, project_context)
             elif workflow_id == "w3":
                 w3_fields = MaterialAnalysisInput.model_validate(raw_fields)
-                await self._run_w3(run_id, w3_fields, filename, file_bytes, project_context)
+                await self._run_w3(
+                    run_id,
+                    w3_fields,
+                    filename,
+                    file_bytes,
+                    project_context,
+                    source_url=source_url,
+                )
             elif workflow_id == "w4":
                 w4_fields = QualityAuditInput.model_validate(raw_fields)
                 await self._run_w4(run_id, w4_fields, filename, file_bytes, project_context)
@@ -775,6 +784,8 @@ class WorkflowService:
         filename: str | None,
         file_bytes: bytes | None,
         project_context: ProjectContext | None,
+        *,
+        source_url: str | None = None,
     ) -> None:
         suffix = (
             PurePosixPath(filename.replace("\\", "/")).suffix.lower()
@@ -803,6 +814,7 @@ class WorkflowService:
                 filename,
                 file_bytes,
                 project_context,
+                source_url=source_url,
             )
             return
         source_text = await self._input_node(
@@ -840,13 +852,31 @@ class WorkflowService:
         filename: str,
         file_bytes: bytes | None,
         project_context: ProjectContext | None,
+        *,
+        source_url: str | None = None,
     ) -> None:
         index = await self.store.begin_node(run_id, "1I-3-1", "输入-多模态材料分析-1")
         try:
-            if file_bytes is None:
-                raise ValueError("没有收到上传材料。")
             assert self.material_ingestor is not None
-            material = await self.material_ingestor.ingest_upload(filename, file_bytes)
+            if source_url is not None:
+                suffix = PurePosixPath(filename.replace("\\", "/")).suffix.lower().lstrip(".")
+                attachment = (
+                    InputAudioContentPart.model_validate(
+                        {
+                            "type": "input_audio",
+                            "input_audio": {"url": source_url, "format": suffix},
+                        }
+                    )
+                    if suffix in {"mp3", "wav", "m4a", "webm"}
+                    else FileContentPart.model_validate(
+                        {"type": "file", "file": {"url": source_url, "filename": filename}}
+                    )
+                )
+                material = (await self.material_ingestor.ingest([attachment]))[0]
+            elif file_bytes is not None:
+                material = await self.material_ingestor.ingest_upload(filename, file_bytes)
+            else:
+                raise ValueError("没有收到上传材料。")
             if material.status is MaterialStatus.failed:
                 messages = "；".join(issue.message for issue in material.issues)
                 raise ValueError(f"材料处理失败：{messages or '识别服务没有返回可用内容。'}")
@@ -858,7 +888,10 @@ class WorkflowService:
                 index,
                 {
                     **fields.model_dump(),
-                    "source_file": {"filename": filename, "size_bytes": len(file_bytes)},
+                    "source_file": {
+                        "filename": filename,
+                        "size_bytes": material.size_bytes or len(file_bytes or b""),
+                    },
                     "material": {
                         "material_id": material.material_id,
                         "modality": material.modality.value,
@@ -886,7 +919,7 @@ class WorkflowService:
                 "display_name": filename,
                 "source_type": fields.source_type,
                 "source_context": fields.source_context,
-                "size_bytes": len(file_bytes),
+                "size_bytes": material.size_bytes or len(file_bytes or b""),
                 "character_count": bundle.character_count,
                 "sha256": material.source_fingerprint,
                 "material_id": material.material_id,

@@ -121,6 +121,7 @@ class Material(BaseModel):
     automatic_text: str = Field(default="", max_length=300_000)
     provider_name: str = Field(default="", max_length=100)
     provider_model: str = Field(default="", max_length=200)
+    size_bytes: int | None = Field(default=None, ge=0)
     segments: list[MaterialSegment] = Field(default_factory=list, max_length=10_000)
     automatic_evidence_use: bool = False
     review_queue: list[str] = Field(default_factory=list, max_length=10_000)
