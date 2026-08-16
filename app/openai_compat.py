@@ -41,9 +41,10 @@ class MaterialAnalysisRunner(Protocol):
 class ChatMessage(BaseModel):
     """兼容纯文本，并允许 user 消息携带 v2.2 content part。"""
 
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    # 清小搭会在正式聊天中附带消息级兼容字段；未参与解析的字段应安全忽略。
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
 
-    role: Literal["system", "user", "assistant"]
+    role: Literal["system", "developer", "user", "assistant"]
     content: ChatContent
 
     @model_validator(mode="after")
@@ -55,7 +56,9 @@ class ChatMessage(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # 平台可能下发 stream_options、metadata 等 OpenAI 扩展字段。
+    # v2.2 不依赖它们，但不能因此拒绝已经合法的文本或附件请求。
+    model_config = ConfigDict(extra="ignore")
 
     model: str | None = None
     messages: list[ChatMessage] = Field(min_length=1, max_length=50)

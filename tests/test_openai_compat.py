@@ -103,7 +103,16 @@ def test_probe_and_input_contract() -> None:
         content_parts = client.post(
             "/v1/chat/completions",
             headers=headers(),
-            json={"messages": [{"role": "user", "content": [{"type": "text", "text": "测试"}]}]},
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "测试"}],
+                        "metadata": {"source": "qingxiaoda"},
+                    }
+                ],
+                "stream_options": {"include_usage": True},
+            },
         )
         assert content_parts.status_code == 200
 
