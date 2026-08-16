@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from app.config import PROJECT_ROOT, Settings, get_settings
+from app.conversation import QingxiaodaConversation
 from app.llm import LLMClient, LLMError, MockLLMClient, OpenAICompatibleClient
 from app.models import IntentRouteRequest, IntentRouteResult, ProjectContext
 from app.multimodal.service import (
@@ -65,7 +66,7 @@ def create_app(
     app = FastAPI(
         default_response_class=Utf8JSONResponse,
         title="行小道本地 Agent",
-        version="2.2.0",
+        version="2.3.0",
         description="四工作流全代码版：OpenAI 兼容协议、项目卡串联与协作发布基线",
     )
     app.state.settings = active_settings
@@ -116,6 +117,15 @@ def create_app(
         if active_llm is not None
         else None
     )
+    app.state.conversation = (
+        QingxiaodaConversation(
+            database_path=PROJECT_ROOT / "data" / "qingxiaoda_conversations.sqlite3",
+            workflow_service=app.state.workflow_service,
+            material_ingestor=app.state.material_ingestor,
+        )
+        if app.state.workflow_service is not None
+        else None
+    )
     app.state.multimodal_provider = multimodal_provider
     app.state.tasks = set()
 
@@ -129,7 +139,7 @@ def create_app(
     async def health() -> dict[str, Any]:
         return {
             "status": "ok" if app.state.llm is not None else "configuration_required",
-            "version": "2.2.0",
+            "version": "2.3.0",
             "app_mode": active_settings.app_mode,
             "provider": active_settings.provider,
             "model": active_settings.model,
@@ -187,6 +197,7 @@ def create_app(
             payload,
             material_ingestor=app.state.material_ingestor,
             material_analyzer=app.state.workflow_service,
+            conversation=app.state.conversation,
         )
         if payload.stream:
             return StreamingResponse(
@@ -292,7 +303,7 @@ def create_app(
 
     @app.get("/api/project")
     async def project_info() -> dict[str, str]:
-        return {"project_root": str(PROJECT_ROOT), "version": "2.2.0"}
+        return {"project_root": str(PROJECT_ROOT), "version": "2.3.0"}
 
     return app
 

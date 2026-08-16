@@ -9,8 +9,9 @@ from typing import Literal, Protocol
 from uuid import uuid4
 
 from fastapi import HTTPException, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.conversation import QingxiaodaConversation
 from app.llm import LLMClient
 from app.models import IntentRouteResult, RouteConfidence, WorkflowId
 from app.multimodal.contracts import (
@@ -65,6 +66,12 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
     max_tokens: int | None = Field(default=None, ge=1, le=16_384)
     temperature: float | None = Field(default=None, ge=0, le=2)
+    # 清小搭为同一轮对话提供稳定 sessionId；字段别名也兼容普通调用方。
+    session_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("sessionId", "session_id"),
+        max_length=200,
+    )
 
     @field_validator("model")
     @classmethod
@@ -155,10 +162,22 @@ async def build_reply(
     request: ChatCompletionRequest,
     material_ingestor: MaterialIngestService | None = None,
     material_analyzer: MaterialAnalysisRunner | None = None,
+    conversation: QingxiaodaConversation | None = None,
 ) -> tuple[str, IntentRouteResult | None]:
     if request.max_tokens == 1:
         return "行小道服务正常。", None
     message, attachments = latest_user_input(request.messages)
+    # 无 sessionId 的一次性 OpenAI 调用保留 v2.2 的“上传即分析”行为；
+    # 清小搭正式会话携带 sessionId，因此始终进入可恢复的逐步引导。
+    if conversation is not None and not (attachments and request.session_id is None):
+        return (
+            await conversation.reply(
+                session_id=request.session_id,
+                text=message,
+                attachments=attachments,
+            ),
+            None,
+        )
     if attachments and material_ingestor is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

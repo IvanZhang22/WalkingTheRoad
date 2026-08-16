@@ -19,6 +19,7 @@ htmlcov/
 .vscode/
 private/
 local-data/
+data/
 uploads/
 .DS_Store
 Thumbs.db
