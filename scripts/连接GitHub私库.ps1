@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$RepositoryUrl,
-    [string]$Tag = "v2.1.0"
+    [string]$Tag = "v2.2.0"
 )
 
 $ErrorActionPreference = "Stop"

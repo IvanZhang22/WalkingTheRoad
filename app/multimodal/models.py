@@ -72,11 +72,13 @@ class ProviderResult(BaseModel):
 
 
 class DownloadedFile(BaseModel):
-    """临时文件只在单次接入中存在；path 永不进入公开序列化。"""
+    """临时文件只在单次接入中存在；path/source_url 永不进入公开序列化。"""
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     path: Path = Field(exclude=True, repr=False)
+    source_url: str | None = Field(default=None, exclude=True, repr=False, max_length=4096)
+    source_format: str | None = Field(default=None, max_length=20)
     filename: str = Field(min_length=1, max_length=300)
     mime_type: str = Field(min_length=1, max_length=200)
     size_bytes: int = Field(ge=0)
@@ -119,6 +121,7 @@ class Material(BaseModel):
     automatic_text: str = Field(default="", max_length=300_000)
     provider_name: str = Field(default="", max_length=100)
     provider_model: str = Field(default="", max_length=200)
+    size_bytes: int | None = Field(default=None, ge=0)
     segments: list[MaterialSegment] = Field(default_factory=list, max_length=10_000)
     automatic_evidence_use: bool = False
     review_queue: list[str] = Field(default_factory=list, max_length=10_000)

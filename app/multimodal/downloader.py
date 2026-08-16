@@ -18,7 +18,7 @@ from zipfile import BadZipFile, ZipFile
 
 import httpx
 
-from app.multimodal.contracts import FileContentPart, InputAudioContentPart
+from app.multimodal.contracts import AUDIO_FORMATS, FileContentPart, InputAudioContentPart
 from app.multimodal.errors import MaterialIngestError
 from app.multimodal.models import DownloadedFile
 
@@ -71,6 +71,11 @@ class MaterialDownloader(ABC):
     async def download(self, source: AttachmentPart) -> DownloadedFile:
         """下载为临时文件；调用方负责在 finally 中删除 path。"""
 
+    async def validate_source_url(self, source: AttachmentPart) -> None:
+        """仅 URL 直送上游 Provider 时使用；默认实现拒绝该能力。"""
+
+        raise MaterialIngestError("XDW-HTTP-URL", "当前下载器不支持 URL 直送识别服务。")
+
 
 async def system_resolver(hostname: str, port: int) -> list[str]:
     def resolve() -> list[str]:
@@ -99,6 +104,7 @@ class SafeDownloader(MaterialDownloader):
         tmp_dir: str | Path | None = None,
         resolver: Resolver = system_resolver,
         transport: httpx.AsyncBaseTransport | None = None,
+        trusted_public_hosts: frozenset[str] = frozenset(),
     ) -> None:
         if max_bytes <= 0 or connect_timeout <= 0 or read_timeout <= 0:
             raise ValueError("下载大小和超时必须大于 0")
@@ -112,6 +118,7 @@ class SafeDownloader(MaterialDownloader):
         self.tmp_dir = Path(tmp_dir) if tmp_dir is not None else Path(tempfile.gettempdir())
         self.resolver = resolver
         self.transport = transport
+        self.trusted_public_hosts = frozenset(host.lower() for host in trusted_public_hosts)
 
     async def download(self, source: AttachmentPart) -> DownloadedFile:
         url, filename, suffix = _source_fields(source)
@@ -134,6 +141,12 @@ class SafeDownloader(MaterialDownloader):
                     raise last_error from exc
         assert last_error is not None
         raise last_error
+
+    async def validate_source_url(self, source: AttachmentPart) -> None:
+        """在调用支持 URL 的 Provider 前执行与下载路径相同的 SSRF 校验。"""
+
+        url, _, _ = _source_fields(source)
+        await self.validate_url(url)
 
     async def validate_url(self, url: str) -> None:
         parsed = urlsplit(url)
@@ -193,11 +206,32 @@ class SafeDownloader(MaterialDownloader):
                             f"附件服务返回 HTTP {response.status_code}。",
                             retryable=response.status_code >= 500,
                         )
-                    return await self._stream_to_temp(response, filename, suffix)
+                    host = (urlsplit(url).hostname or "").lower()
+                    trusted_source_url = (
+                        url
+                        if suffix in AUDIO_FORMATS
+                        and current == url
+                        and any(
+                            host == trusted
+                            or (trusted.startswith("*.") and host.endswith(trusted[1:]))
+                            for trusted in self.trusted_public_hosts
+                        )
+                        else None
+                    )
+                    return await self._stream_to_temp(
+                        response,
+                        filename,
+                        suffix,
+                        trusted_source_url,
+                    )
         raise MaterialIngestError("XDW-HTTP-REDIRECT", "附件地址重定向次数过多。")
 
     async def _stream_to_temp(
-        self, response: httpx.Response, filename: str, suffix: str
+        self,
+        response: httpx.Response,
+        filename: str,
+        suffix: str,
+        source_url: str | None,
     ) -> DownloadedFile:
         declared = response.headers.get("content-length")
         if declared:
@@ -221,14 +255,10 @@ class SafeDownloader(MaterialDownloader):
                 async for chunk in response.aiter_bytes(1024 * 1024):
                     size += len(chunk)
                     if size > self.max_bytes:
-                        raise MaterialIngestError(
-                            "XDW-HTTP-SIZE", "附件超过允许的大小限制。"
-                        )
+                        raise MaterialIngestError("XDW-HTTP-SIZE", "附件超过允许的大小限制。")
                     stream.write(chunk)
                     digest.update(chunk)
-            media_type = (
-                response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-            )
+            media_type = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
             _validate_file_type(
                 path,
                 suffix,
@@ -237,10 +267,10 @@ class SafeDownloader(MaterialDownloader):
             )
             return DownloadedFile(
                 path=path,
+                source_url=source_url,
+                source_format=suffix,
                 filename=filename,
-                mime_type=(
-                    PREFERRED_MIME[suffix] if media_type in GENERIC_MIME else media_type
-                ),
+                mime_type=(PREFERRED_MIME[suffix] if media_type in GENERIC_MIME else media_type),
                 size_bytes=size,
                 sha256=digest.hexdigest(),
             )
@@ -253,7 +283,7 @@ class MockDownloader(MaterialDownloader):
     """仅为契约测试创建最小临时文件，不访问 source.url。"""
 
     async def download(self, source: AttachmentPart) -> DownloadedFile:
-        _, filename, suffix = _source_fields(source)
+        source_url, filename, suffix = _source_fields(source)
         content = _mock_content(suffix)
         file_descriptor, raw_path = tempfile.mkstemp(prefix="xdw_mock_", suffix=f".{suffix}")
         os.close(file_descriptor)
@@ -261,11 +291,72 @@ class MockDownloader(MaterialDownloader):
         path.write_bytes(content)
         return DownloadedFile(
             path=path,
+            source_url=source_url,
+            source_format=suffix,
             filename=filename,
             mime_type=PREFERRED_MIME[suffix],
             size_bytes=len(content),
             sha256=hashlib.sha256(content).hexdigest(),
         )
+
+    async def validate_source_url(self, source: AttachmentPart) -> None:
+        """测试替身不访问网络；真实环境由 SafeDownloader 执行 SSRF 校验。"""
+
+        _source_fields(source)
+
+
+def stage_uploaded_file(
+    filename: str,
+    data: bytes,
+    *,
+    max_bytes: int,
+    tmp_dir: str | Path | None = None,
+) -> DownloadedFile:
+    """校验浏览器直传文件并暂存，供 ASR/OCR/文档 Provider 统一消费。"""
+
+    normalized = filename.strip().replace("\\", "/")
+    if (
+        not normalized
+        or len(normalized) > 300
+        or "\x00" in normalized
+        or PurePosixPath(normalized).name != normalized
+        or normalized in {".", ".."}
+    ):
+        raise MaterialIngestError("XDW-FILE-NAME", "上传文件名无效。")
+    suffix = PurePosixPath(normalized).suffix.lower().lstrip(".")
+    if suffix not in SUPPORTED_MIME:
+        raise MaterialIngestError("XDW-FILE-TYPE", "当前上传文件类型不受支持。")
+    if not data:
+        raise MaterialIngestError("XDW-FILE-EMPTY", "上传文件为空。")
+    if len(data) > max_bytes:
+        raise MaterialIngestError("XDW-HTTP-SIZE", "附件超过允许的大小限制。")
+
+    destination = Path(tmp_dir) if tmp_dir is not None else Path(tempfile.gettempdir())
+    destination.mkdir(parents=True, exist_ok=True)
+    file_descriptor, raw_path = tempfile.mkstemp(
+        prefix="xdw_upload_", suffix=f".{suffix}", dir=destination
+    )
+    os.close(file_descriptor)
+    path = Path(raw_path)
+    try:
+        path.write_bytes(data)
+        _validate_file_type(
+            path,
+            suffix,
+            "",
+            max_uncompressed_bytes=min(max_bytes * 10, 200 * 1024 * 1024),
+        )
+        return DownloadedFile(
+            path=path,
+            source_format=suffix,
+            filename=normalized,
+            mime_type=PREFERRED_MIME[suffix],
+            size_bytes=len(data),
+            sha256=hashlib.sha256(data).hexdigest(),
+        )
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
 
 
 def _source_fields(source: AttachmentPart) -> tuple[str, str, str]:

@@ -46,7 +46,7 @@ def test_models_requires_separate_agent_key() -> None:
         assert response.json()["data"][0]["id"] == "xingxiaodao-agent"
 
 
-def test_non_streaming_chat_returns_openai_shape_and_route() -> None:
+def test_non_streaming_chat_returns_openai_shape_and_user_confirmable_menu() -> None:
     with TestClient(create_app(settings=settings(), llm=MockLLMClient())) as client:
         response = client.post(
             "/v1/chat/completions",
@@ -61,7 +61,9 @@ def test_non_streaming_chat_returns_openai_shape_and_route() -> None:
         assert body["object"] == "chat.completion"
         assert body["model"] == "xingxiaodao-agent"
         assert body["choices"][0]["message"]["role"] == "assistant"
-        assert "W3 质性材料分析" in body["choices"][0]["message"]["content"]
+        assert "材料分析" in body["choices"][0]["message"]["content"]
+        assert "请回复数字选择" in body["choices"][0]["message"]["content"]
+        assert "标准协议接入模式" not in body["choices"][0]["message"]["content"]
         assert body["choices"][0]["finish_reason"] == "stop"
         assert body["usage"]["total_tokens"] >= 2
 
@@ -82,7 +84,7 @@ def test_streaming_chat_ends_with_stop_usage_and_done() -> None:
         assert frames[-1] == "[DONE]"
         chunks = [json.loads(frame) for frame in frames[:-1]]
         assert chunks[0]["choices"][0]["delta"] == {"role": "assistant"}
-        assert "W2 访谈设计助手" in chunks[1]["choices"][0]["delta"]["content"]
+        assert "回复“2”进入" in chunks[1]["choices"][0]["delta"]["content"]
         assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
         assert "usage" in chunks[-1]
 
@@ -103,7 +105,16 @@ def test_probe_and_input_contract() -> None:
         content_parts = client.post(
             "/v1/chat/completions",
             headers=headers(),
-            json={"messages": [{"role": "user", "content": [{"type": "text", "text": "测试"}]}]},
+            json={
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "测试"}],
+                        "metadata": {"source": "qingxiaoda"},
+                    }
+                ],
+                "stream_options": {"include_usage": True},
+            },
         )
         assert content_parts.status_code == 200
 
@@ -141,6 +152,7 @@ def test_mock_multimodal_parts_use_same_chat_endpoint_without_echoing_url() -> N
         assert "W3 质性材料分析" in content
         assert "共 2 份" in content
         assert "自动可用 2 份" in content
+        assert "# 3L-3-2 模拟结果" in content
         assert "MAT_" in content
         assert signed_url not in content
         assert "must-not-echo" not in content
@@ -215,6 +227,110 @@ def test_live_document_can_use_real_parser_through_same_chat_endpoint() -> None:
         content = response.json()["choices"][0]["message"]["content"]
         assert "自动可用 1 份" in content
         assert "material.txt" in content
+
+
+def test_qingxiaoda_session_collects_w1_fields_and_executes() -> None:
+    with TestClient(create_app(settings=settings(), llm=MockLLMClient())) as client:
+        session_id = "qingxiaoda-session-w1"
+
+        def chat(text: str) -> str:
+            response = client.post(
+                "/v1/chat/completions",
+                headers=headers(),
+                json={
+                    "sessionId": session_id,
+                    "messages": [{"role": "user", "content": text}],
+                },
+            )
+            assert response.status_code == 200
+            return response.json()["choices"][0]["message"]["content"]
+
+        assert "第一步" in chat("1")
+        assert "第二步" in chat("暑期支教中的学生参与")
+        chat("理解支教学生如何形成公共服务责任感")
+        chat("跳过")
+        chat("跳过")
+        chat("支教学生和带队老师")
+        content = chat("4 人小组，实践期两周")
+        assert "研究设计（待你确认）" in content
+        assert "确认采用当前结果" in content
+        assert "研究者确认" in chat("1")
+        assert "当前项目进度" in chat("2")
+
+
+def test_qingxiaoda_requires_consent_before_material_upload() -> None:
+    with TestClient(create_app(settings=settings(), llm=MockLLMClient())) as client:
+        session_id = "qingxiaodao-session-consent"
+
+        def chat(text: str) -> str:
+            response = client.post(
+                "/v1/chat/completions",
+                headers=headers(),
+                json={
+                    "sessionId": session_id,
+                    "messages": [{"role": "user", "content": text}],
+                },
+            )
+            assert response.status_code == 200
+            return response.json()["choices"][0]["message"]["content"]
+
+        assert "材料分析" in chat("3")
+        chat("返乡青年如何理解本地就业机会？")
+        chat("访谈材料包 A")
+        chat("1")
+        privacy = chat("跳过")
+        assert "上传前请确认" in privacy
+        assert "有权使用这些材料" in privacy
+        assert "上传文件" in chat("1")
+
+
+def test_qingxiaoda_confirms_materials_before_running_w3() -> None:
+    with TestClient(create_app(settings=settings(), llm=MockLLMClient())) as client:
+        session_id = "qingxiaodao-session-material-confirm"
+
+        def chat(text: str) -> str:
+            response = client.post(
+                "/v1/chat/completions",
+                headers=headers(),
+                json={
+                    "sessionId": session_id,
+                    "messages": [{"role": "user", "content": text}],
+                },
+            )
+            assert response.status_code == 200
+            return response.json()["choices"][0]["message"]["content"]
+
+        chat("3")
+        chat("返乡青年如何理解就业机会？")
+        chat("材料包 A")
+        chat("1")
+        chat("跳过")
+        chat("1")
+        uploaded = client.post(
+            "/v1/chat/completions",
+            headers=headers(),
+            json={
+                "sessionId": session_id,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "file",
+                                "file": {
+                                    "url": "https://files.example.org/material.txt",
+                                    "filename": "material.txt",
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+        assert uploaded.status_code == 200
+        content = uploaded.json()["choices"][0]["message"]["content"]
+        assert "分类正确，开始分析" in content
+        assert "不会把 AI 推测写成受访者原话" in content
 
 
 def test_multimodal_contract_rejects_data_url_and_unsupported_type() -> None:

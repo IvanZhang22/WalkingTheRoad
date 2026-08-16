@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xingxiaodao-agent"
-version = "2.1.0"
+version = "3.1.0"
 description = "行小道：面向大学生社会实践的社科研究辅助 Agent"
 requires-python = ">=3.12"
 dependencies = [
@@ -16,6 +16,7 @@ dependencies = [
   "python-multipart>=0.0.20,<1",
   "python-docx>=1.2,<2",
   "pypdf>=6.0,<7",
+  "pillow>=12.3,<13",
   "httpx>=0.28,<1",
 ]
 

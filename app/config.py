@@ -32,6 +32,13 @@ def _non_negative_int(name: str, default: int) -> int:
     return value
 
 
+def _boolean(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "true" if default else "false").strip().lower()
+    if raw not in {"true", "false", "1", "0", "yes", "no"}:
+        raise ValueError(f"环境变量 {name} 必须是 true 或 false")
+    return raw in {"true", "1", "yes"}
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     api_key: str
@@ -47,6 +54,28 @@ class Settings:
     multimodal_connect_timeout_seconds: int = 10
     multimodal_read_timeout_seconds: int = 120
     multimodal_max_redirects: int = 3
+    asr_provider: str = "disabled"
+    stepfun_asr_api_key: str = ""
+    stepfun_asr_base_url: str = "https://api.stepfun.com/v1"
+    stepfun_asr_model: str = "step-asr-1.1"
+    stepfun_asr_request_timeout_seconds: int = 30
+    stepfun_asr_poll_timeout_seconds: int = 300
+    stepfun_asr_poll_interval_seconds: int = 2
+    deepgram_api_key: str = ""
+    deepgram_base_url: str = "https://api.deepgram.com"
+    deepgram_model: str = "nova-3"
+    deepgram_language: str = "zh-CN"
+    deepgram_diarize_model: str = "latest"
+    deepgram_timeout_seconds: int = 120
+    ocr_provider: str = "disabled"
+    baidu_ocr_api_key: str = ""
+    baidu_ocr_secret_key: str = ""
+    baidu_ocr_base_url: str = "https://aip.baidubce.com"
+    baidu_ocr_endpoint_path: str = "/rest/2.0/ocr/v1/pp_ocrv5"
+    baidu_ocr_timeout_seconds: int = 60
+    baidu_ocr_max_pages: int = 20
+    blob_read_write_token: str = ""
+    blob_cleanup_enabled: bool = True
 
     @property
     def key_configured(self) -> bool:
@@ -56,11 +85,35 @@ class Settings:
     def agent_key_configured(self) -> bool:
         return bool(self.agent_api_key.strip())
 
+    @property
+    def stepfun_asr_key_configured(self) -> bool:
+        return bool(self.stepfun_asr_api_key.strip())
+
+    @property
+    def deepgram_key_configured(self) -> bool:
+        return bool(self.deepgram_api_key.strip())
+
+    @property
+    def asr_key_configured(self) -> bool:
+        if self.asr_provider == "stepfun":
+            return self.stepfun_asr_key_configured
+        if self.asr_provider == "deepgram":
+            return self.deepgram_key_configured
+        return False
+
+    @property
+    def baidu_ocr_key_configured(self) -> bool:
+        return bool(self.baidu_ocr_api_key.strip() and self.baidu_ocr_secret_key.strip())
+
+    @property
+    def blob_upload_configured(self) -> bool:
+        return self.blob_read_write_token.strip().startswith("vercel_blob_rw_")
+
 
 def get_settings() -> Settings:
     provider = os.getenv("MODEL_PROVIDER", "deepseek").strip().lower()
-    if provider not in {"stepfun", "deepseek"}:
-        raise ValueError("MODEL_PROVIDER 只能是 stepfun 或 deepseek")
+    if provider not in {"stepfun", "deepseek", "vercel", "openrouter"}:
+        raise ValueError("MODEL_PROVIDER 只能是 stepfun、deepseek、vercel 或 openrouter")
 
     thinking = (
         os.getenv("MODEL_THINKING", os.getenv("DEEPSEEK_THINKING", "disabled")).strip().lower()
@@ -72,6 +125,14 @@ def get_settings() -> Settings:
     if app_mode not in {"live", "mock"}:
         raise ValueError("APP_MODE 只能是 live 或 mock")
 
+    asr_provider = os.getenv("ASR_PROVIDER", "disabled").strip().lower()
+    if asr_provider not in {"disabled", "stepfun", "deepgram"}:
+        raise ValueError("ASR_PROVIDER 只能是 disabled、stepfun 或 deepgram")
+
+    ocr_provider = os.getenv("OCR_PROVIDER", "disabled").strip().lower()
+    if ocr_provider not in {"disabled", "baidu"}:
+        raise ValueError("OCR_PROVIDER 只能是 disabled 或 baidu")
+
     defaults = {
         "stepfun": {
             "base_url": "https://api.stepfun.com/step_plan/v1",
@@ -80,6 +141,14 @@ def get_settings() -> Settings:
         "deepseek": {
             "base_url": "https://api.deepseek.com",
             "model": "deepseek-v4-flash",
+        },
+        "vercel": {
+            "base_url": "https://ai-gateway.vercel.sh/v1",
+            "model": "openai/gpt-5.4-mini",
+        },
+        "openrouter": {
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": "openrouter/free",
         },
     }[provider]
 
@@ -95,8 +164,21 @@ def get_settings() -> Settings:
         else defaults["model"]
     )
 
+    explicit_model_key = os.getenv("MODEL_API_KEY", "").strip()
+    if provider == "vercel":
+        model_api_key = (
+            explicit_model_key
+            or os.getenv("AI_GATEWAY_API_KEY", "").strip()
+            or os.getenv("VERCEL_OIDC_TOKEN", "").strip()
+        )
+    elif provider == "openrouter":
+        model_api_key = explicit_model_key or os.getenv("OPENROUTER_API_KEY", "").strip()
+    else:
+        model_api_key = explicit_model_key or legacy_api_key
+    stepfun_key_fallback = model_api_key if provider == "stepfun" else ""
+
     return Settings(
-        api_key=os.getenv("MODEL_API_KEY", legacy_api_key),
+        api_key=model_api_key,
         base_url=os.getenv(
             "MODEL_BASE_URL",
             legacy_base_url,
@@ -105,13 +187,39 @@ def get_settings() -> Settings:
         thinking=thinking,
         app_mode=app_mode,
         timeout_seconds=_positive_int("MODEL_TIMEOUT_SECONDS", 120),
-        max_upload_bytes=_positive_int("MAX_UPLOAD_MB", 20) * 1024 * 1024,
+        max_upload_bytes=_positive_int("MAX_UPLOAD_MB", 100) * 1024 * 1024,
         max_document_chars=_positive_int("MAX_DOCUMENT_CHARS", 300_000),
         provider=provider,
         agent_api_key=os.getenv("AGENT_API_KEY", ""),
-        multimodal_connect_timeout_seconds=_positive_int(
-            "MULTIMODAL_CONNECT_TIMEOUT_SECONDS", 10
-        ),
+        multimodal_connect_timeout_seconds=_positive_int("MULTIMODAL_CONNECT_TIMEOUT_SECONDS", 10),
         multimodal_read_timeout_seconds=_positive_int("MULTIMODAL_READ_TIMEOUT_SECONDS", 120),
         multimodal_max_redirects=_non_negative_int("MULTIMODAL_MAX_REDIRECTS", 3),
+        asr_provider=asr_provider,
+        stepfun_asr_api_key=(os.getenv("STEPFUN_ASR_API_KEY", "").strip() or stepfun_key_fallback),
+        stepfun_asr_base_url=os.getenv("STEPFUN_ASR_BASE_URL", "https://api.stepfun.com/v1").rstrip(
+            "/"
+        ),
+        stepfun_asr_model=os.getenv("STEPFUN_ASR_MODEL", "step-asr-1.1"),
+        stepfun_asr_request_timeout_seconds=_positive_int(
+            "STEPFUN_ASR_REQUEST_TIMEOUT_SECONDS", 30
+        ),
+        stepfun_asr_poll_timeout_seconds=_positive_int("STEPFUN_ASR_POLL_TIMEOUT_SECONDS", 300),
+        stepfun_asr_poll_interval_seconds=_non_negative_int("STEPFUN_ASR_POLL_INTERVAL_SECONDS", 2),
+        deepgram_api_key=os.getenv("DEEPGRAM_API_KEY", ""),
+        deepgram_base_url=os.getenv("DEEPGRAM_BASE_URL", "https://api.deepgram.com").rstrip("/"),
+        deepgram_model=os.getenv("DEEPGRAM_MODEL", "nova-3"),
+        deepgram_language=os.getenv("DEEPGRAM_LANGUAGE", "zh-CN"),
+        deepgram_diarize_model=os.getenv("DEEPGRAM_DIARIZE_MODEL", "latest"),
+        deepgram_timeout_seconds=_positive_int("DEEPGRAM_TIMEOUT_SECONDS", 120),
+        ocr_provider=ocr_provider,
+        baidu_ocr_api_key=os.getenv("BAIDU_OCR_API_KEY", ""),
+        baidu_ocr_secret_key=os.getenv("BAIDU_OCR_SECRET_KEY", ""),
+        baidu_ocr_base_url=os.getenv("BAIDU_OCR_BASE_URL", "https://aip.baidubce.com").rstrip("/"),
+        baidu_ocr_endpoint_path=os.getenv(
+            "BAIDU_OCR_ENDPOINT_PATH", "/rest/2.0/ocr/v1/pp_ocrv5"
+        ),
+        baidu_ocr_timeout_seconds=_positive_int("BAIDU_OCR_TIMEOUT_SECONDS", 60),
+        baidu_ocr_max_pages=_positive_int("BAIDU_OCR_MAX_PAGES", 20),
+        blob_read_write_token=os.getenv("BLOB_READ_WRITE_TOKEN", ""),
+        blob_cleanup_enabled=_boolean("BLOB_CLEANUP_ENABLED", True),
     )

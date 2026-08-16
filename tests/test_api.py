@@ -25,7 +25,19 @@ def settings() -> Settings:
 def test_health_workflow_run_and_markdown_download() -> None:
     with TestClient(create_app(settings=settings(), llm=MockLLMClient())) as client:
         assert client.get("/api/health").status_code == 200
-        assert len(client.get("/api/workflows").json()) == 4
+        workflows = client.get("/api/workflows").json()
+        assert len(workflows) == 4
+        w3_file = next(
+            field
+            for workflow in workflows
+            if workflow["id"] == "w3"
+            for field in workflow["fields"]
+            if field["name"] == "source_file"
+        )
+        assert ".m4a" in w3_file["accept"]
+        assert ".png" in w3_file["accept"]
+        assert "M4A" in w3_file["help"]
+        assert "PNG" in w3_file["help"]
         response = client.post(
             "/api/runs",
             data={
@@ -61,9 +73,10 @@ def test_intent_route_recommends_without_creating_a_run() -> None:
 def test_intent_route_rejects_empty_or_extra_input() -> None:
     with TestClient(create_app(settings=settings(), llm=MockLLMClient())) as client:
         assert client.post("/api/route", json={"message": "   "}).status_code == 422
-        assert client.post(
-            "/api/route", json={"message": "研究设计", "workflow_id": "w1"}
-        ).status_code == 422
+        assert (
+            client.post("/api/route", json={"message": "研究设计", "workflow_id": "w1"}).status_code
+            == 422
+        )
 
 
 def test_intent_route_returns_503_when_model_is_unavailable() -> None:
@@ -116,3 +129,30 @@ def test_run_rejects_project_context_with_raw_text() -> None:
         )
         assert response.status_code == 400
         assert "项目卡上下文无效" in response.json()["detail"]
+
+
+def test_blob_token_endpoint_reports_configuration_and_requires_intent_header() -> None:
+    app_settings = settings()
+    with TestClient(create_app(settings=app_settings, llm=MockLLMClient())) as client:
+        assert client.get("/api/health").json()["large_upload_configured"] is False
+        response = client.post(
+            "/api/blob/upload-token",
+            json={
+                "type": "blob.generate-client-token",
+                "payload": {
+                    "pathname": (
+                        "xingxiaodao-uploads/"
+                        "12345678-1234-1234-1234-123456789abc-recording.mp3"
+                    ),
+                    "clientPayload": json.dumps(
+                        {
+                            "filename": "recording.mp3",
+                            "sizeBytes": 18_900_000,
+                            "contentType": "audio/mpeg",
+                        }
+                    ),
+                    "multipart": False,
+                },
+            },
+        )
+        assert response.status_code == 403

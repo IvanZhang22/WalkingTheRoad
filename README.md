@@ -1,6 +1,10 @@
-# 行小道本地 Agent v2.1.0
+# 行小道本地 Agent v3.1.0（多模态集成开发中）
 
-v2.1.0 保留 v2.0.0 的 OpenAI 兼容接口，并完成 Vercel Preview、Bearer 鉴权、模型列表和真实对话调用验证。清小搭无法连接境外 Vercel 服务，因此本版不宣称已接入或上线清小搭；国内部署与审核上线顺延至 v2.3。多模态能力从 v2.2 开始通过小步 PR 合入。
+v3.1.0 在 v3.0.0 的云服务器部署和清小搭研究旅程基础上，合入文本、普通文档、音频、图片与扫描 PDF 的安全解析、置信度门控和证据链能力。主智能体负责接待、意图澄清、可纠正路由、上传授权、人工确认、异常守门与下一阶段导航；W1—W4 仍负责实际的研究设计、访谈设计、材料分析和证据质检。会话状态使用清小搭 `sessionId` 在服务端保存；内部节点名、协议模式和提示词不向用户展示。
+
+多模态能力通过唯一的 OpenAI 兼容入口接收文本、普通文档、音频、图片和扫描 PDF：安全下载后分别进入本地解析、阶跃/Deepgram ASR 或百度 OCR，再按片段置信度和定位门控执行 W3 证据提取、确定性引文核验和主题生成。视频不在本版范围内。
+
+PR #11 保留了面向 Vercel Preview 的 Blob 大文件直传实现；腾讯云正式部署不应配置该能力。正式上线前需要将这层替换为腾讯云 COS 的预签名上传，并完成音频、OCR 凭据与清小搭附件协议的真实验收。
 
 项目卡只保存在当前浏览器，不是数据库。上传文件正文、API Key 和完整节点轨迹不会进入项目卡。
 
@@ -13,7 +17,8 @@ v2.1.0 保留 v2.0.0 的 OpenAI 兼容接口，并完成 Vercel Preview、Bearer
 3、在自动打开的 `.env` 中填写：
 
 ```text
-MODEL_API_KEY=你的阶跃星辰STEP_API_KEY
+MODEL_PROVIDER=openrouter
+OPENROUTER_API_KEY=你的OpenRouter_API_Key
 ```
 
 4、保存后回到命令窗口按回车。Chrome 会自动打开：
@@ -90,16 +95,43 @@ W3、W4 的 `7C` 节点只接受原文完全匹配或仅空白差异匹配。模
 
 ## 五、模型配置
 
-默认配置是阶跃星辰 Coding Plan：
+免绑卡演示默认推荐使用 OpenRouter 的免费模型路由：
 
 ```text
-MODEL_PROVIDER=stepfun
-MODEL_BASE_URL=https://api.stepfun.com/step_plan/v1
-MODEL_NAME=step-3.5-flash
+MODEL_PROVIDER=openrouter
+MODEL_BASE_URL=https://openrouter.ai/api/v1
+MODEL_NAME=openrouter/free
 APP_MODE=live
 ```
 
-当前已验证配置使用 `step-3.5-flash` 和 Step Plan 地址。`.env` 下半部分保留了 DeepSeek 备用块；切换时只保留其中一组未注释的 `MODEL_*` 配置即可。
+运行 `python scripts/connect_openrouter_oauth.py` 可通过一次浏览器 OAuth 授权，将密钥直接写入
+已连接的 Vercel Production/Preview，不在终端或仓库中落盘。免费模型有每日请求限制，适合演示和
+低频试用；真实敏感访谈应在 OpenRouter 隐私设置中禁止训练与日志，并改用具备稳定数据政策的
+付费 Provider。`.env.example` 仍保留 Vercel AI Gateway、阶跃和 DeepSeek 备用块。
+
+多模态 Provider 独立配置：
+
+```text
+# Deepgram：分句时间戳与置信度齐全，高置信片段可自动进入 W3
+ASR_PROVIDER=deepgram
+DEEPGRAM_API_KEY=你的Deepgram密钥
+
+# 阶跃 ASR 是可选备用；官方不返回置信度，因此进入人工复核
+# ASR_PROVIDER=stepfun
+
+# 图片和扫描 PDF 的 bbox、页码与行置信度
+OCR_PROVIDER=baidu
+BAIDU_OCR_API_KEY=你的百度OCR_AK
+BAIDU_OCR_SECRET_KEY=你的百度OCR_SK
+
+# 大文件网页上传：在 Vercel Storage 中连接 Public Blob Store 后自动注入
+BLOB_READ_WRITE_TOKEN=vercel_blob_rw_...
+BLOB_CLEANUP_ENABLED=true
+```
+
+Vercel OIDC 只负责文本模型；Deepgram 和百度密钥仍需单独配置。所有长期密钥只放服务端 `.env` 或部署平台环境变量。
+
+Vercel Function 单次请求体仍只有 4.5 MB。网页对 4 MB 以内文件沿用 multipart 直传；更大的文件先由浏览器直接传到 Public Blob Store，随后后端只接收 URL。分析任务结束后默认删除临时 Blob。当前应用没有用户登录体系，因此不要把上传令牌接口暴露给不受信任的公开流量；团队演示应限制访问，并只上传已授权、脱敏材料。
 
 开发时可将 `APP_MODE=mock`，这样不会调用真实 API，也不会产生费用。模拟结果只能用于检查工程链路，不能评价 Agent 的研究能力。
 
@@ -168,11 +200,11 @@ node --test tests\js\test_project_store.cjs
 本地页面继续使用 `/api/*` 接口。面向清小搭的标准接口为：
 
 - `GET /v1/models`：Bearer 鉴权后的模型列表；
-- `POST /v1/chat/completions`：文本消息意图识别与工作流引导；
+- `POST /v1/chat/completions`：纯文本消息做意图识别；携带附件时执行多模态接入和 W3 完整闭环；
 - `stream: true`：返回标准 Server-Sent Events，最后依次给出 stop 帧和 `[DONE]`；
 - `max_tokens: 1`：返回最小探测响应，不调用模型。
 
-调用标准接口时使用 `AGENT_API_KEY`；模型服务使用 `MODEL_API_KEY`。两者必须不同。完整契约与部署准备见 `docs/v2.0.0-协议与验收.md` 和 `docs/v2.1.0-Vercel与清小搭接入.md`。
+调用标准接口时使用 `AGENT_API_KEY`；模型服务使用 `MODEL_API_KEY`。两者必须不同。多模态配置、证据门控和验收见 `docs/v2.2.5-多模态验收与部署.md`。
 
 ## 八、数据与版本边界
 
@@ -182,7 +214,8 @@ node --test tests\js\test_project_store.cjs
 - 项目卡使用当前浏览器 `localStorage`，不跨浏览器或设备同步；
 - 单项目上限约 1MB、全部项目安全预算约 4MB，存储失败时降级为当前页面临时项目；
 - 项目卡只保存材料编号、文件名、类型、摘要、字符数和哈希，不保存原始附件；
-- PDF 仅支持文字层，扫描件、图片和音频留到 v2.2；
+- PDF 优先读取文字层，文字层不足时回退到逐页 OCR；图片保存 bbox，音频保存毫秒时间戳；
+- 阶跃文件 ASR 缺少官方置信度，默认只进入人工复核；需要自动进入 W3 时选择 Deepgram；
 - 同一浏览器同时只运行一条工作流；
 - Markdown 仍是单次运行的正式成果导出格式；项目整体可另行导出 JSON。
 

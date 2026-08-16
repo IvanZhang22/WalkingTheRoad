@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Protocol, TypeVar
 
 from openai import AsyncOpenAI
@@ -31,6 +32,13 @@ class LLMClient(Protocol):
 class OpenAICompatibleClient:
     def __init__(self, settings: Settings) -> None:
         if not settings.key_configured:
+            if settings.provider == "vercel":
+                raise LLMError(
+                    "尚未配置 Vercel AI Gateway 鉴权。本地运行请设置 AI_GATEWAY_API_KEY；"
+                    "Vercel 部署应自动提供 VERCEL_OIDC_TOKEN。"
+                )
+            if settings.provider == "openrouter":
+                raise LLMError("尚未配置 OpenRouter 鉴权，请设置 OPENROUTER_API_KEY。")
             raise LLMError(
                 "尚未配置 MODEL_API_KEY。本地运行请填写项目根目录的 .env；"
                 "Vercel 部署请在项目 Settings → Environment Variables 中配置后重新部署。"
@@ -63,7 +71,7 @@ class OpenAICompatibleClient:
         if self.settings.provider == "deepseek":
             kwargs["extra_body"] = {"thinking": {"type": self.settings.thinking}}
         if json_model is not None:
-            kwargs["response_format"] = {"type": "json_object"}
+            kwargs["response_format"] = self._response_format(node_id, json_model)
 
         try:
             response = await self.client.chat.completions.create(**kwargs)  # type: ignore[call-overload]
@@ -92,6 +100,18 @@ class OpenAICompatibleClient:
         validated = model.model_validate(data)
         return validated.model_dump_json(indent=2)
 
+    def _response_format(self, node_id: str, model: type[T]) -> dict[str, object]:
+        if self.settings.provider not in {"vercel", "openrouter"}:
+            return {"type": "json_object"}
+        schema_name = re.sub(r"[^A-Za-z0-9_-]", "_", f"xingxiaodao_{node_id}")
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": schema_name,
+                "schema": model.model_json_schema(),
+            },
+        }
+
     async def _repair_json(
         self,
         *,
@@ -116,7 +136,7 @@ class OpenAICompatibleClient:
                     {"role": "user", "content": repair_user},
                 ],
                 "temperature": 0,
-                "response_format": {"type": "json_object"},
+                "response_format": self._response_format(f"{node_id}_repair", model),
             }
             if self.settings.provider == "deepseek":
                 repair_kwargs["extra_body"] = {"thinking": {"type": self.settings.thinking}}

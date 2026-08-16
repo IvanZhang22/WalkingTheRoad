@@ -5,6 +5,7 @@ import pytest
 from app.config import Settings
 from app.llm import MockLLMClient
 from app.models import RunStatus
+from app.multimodal.service import build_mock_ingest_service
 from app.run_store import RunStore
 from app.workflows import WorkflowService
 
@@ -116,6 +117,37 @@ async def test_w3_and_w4_complete_with_single_file() -> None:
     )
     assert w4 is not None and w4.status == RunStatus.succeeded
     assert "7C-4-1" in [trace.legacy_node_id for trace in w4.traces]
+
+
+@pytest.mark.asyncio
+async def test_w3_browser_image_upload_uses_ocr_material_pipeline() -> None:
+    store = RunStore()
+    service = WorkflowService(
+        store,
+        MockLLMClient(),
+        settings(),
+        material_ingestor=build_mock_ingest_service(),
+    )
+    record = await store.create("w3")
+    await service.execute(
+        record.run_id,
+        "w3",
+        {
+            "research_question": "海报如何呈现服务入口？",
+            "source_id": "DEMO_IMAGE_001",
+            "source_type": "田野或观察笔记",
+            "source_context": "图片 OCR 浏览器上传测试",
+        },
+        "poster.png",
+        b"\x89PNG\r\n\x1a\nmock-image",
+    )
+
+    completed = await store.get(record.run_id)
+    assert completed is not None and completed.status == RunStatus.succeeded
+    input_trace = next(trace for trace in completed.traces if trace.legacy_node_id == "1I-3-1")
+    assert input_trace.output["material"]["modality"] == "image"
+    assert input_trace.output["material"]["provider_name"] == "mock"
+    assert input_trace.output["material"]["automatic_segment_count"] == 1
 
 
 @pytest.mark.asyncio
