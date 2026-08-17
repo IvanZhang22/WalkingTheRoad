@@ -62,7 +62,7 @@ def test_non_streaming_chat_returns_openai_shape_and_user_confirmable_menu() -> 
         assert body["model"] == "xingxiaodao-agent"
         assert body["choices"][0]["message"]["role"] == "assistant"
         assert "材料分析" in body["choices"][0]["message"]["content"]
-        assert "请回复数字选择" in body["choices"][0]["message"]["content"]
+        assert "研究问题" in body["choices"][0]["message"]["content"]
         assert "标准协议接入模式" not in body["choices"][0]["message"]["content"]
         assert body["choices"][0]["finish_reason"] == "stop"
         assert body["usage"]["total_tokens"] >= 2
@@ -84,7 +84,7 @@ def test_streaming_chat_ends_with_stop_usage_and_done() -> None:
         assert frames[-1] == "[DONE]"
         chunks = [json.loads(frame) for frame in frames[:-1]]
         assert chunks[0]["choices"][0]["delta"] == {"role": "assistant"}
-        assert "回复“2”进入" in chunks[1]["choices"][0]["delta"]["content"]
+        assert "审查已有问题" in chunks[1]["choices"][0]["delta"]["content"]
         assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
         assert "usage" in chunks[-1]
 
@@ -254,8 +254,8 @@ def test_qingxiaoda_session_collects_w1_fields_and_executes() -> None:
         content = chat("4 人小组，实践期两周")
         assert "研究设计（待你确认）" in content
         assert "确认采用当前结果" in content
-        assert "研究者确认" in chat("1")
-        assert "当前项目进度" in chat("2")
+        assert "由你确认采用" in chat("1")
+        assert "当前项目：" in chat("2")
 
 
 def test_qingxiaoda_requires_consent_before_material_upload() -> None:

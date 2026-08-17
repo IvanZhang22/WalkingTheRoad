@@ -85,7 +85,7 @@ def create_app(
     app = FastAPI(
         default_response_class=Utf8JSONResponse,
         title="行小道本地 Agent",
-        version="3.1.0",
+        version="3.1.1",
         description="四工作流全代码版：OpenAI 兼容协议、项目卡串联与协作发布基线",
     )
     app.state.settings = active_settings
@@ -158,7 +158,7 @@ def create_app(
     async def health() -> dict[str, Any]:
         return {
             "status": "ok" if app.state.llm is not None else "configuration_required",
-            "version": "3.1.0",
+            "version": "3.1.1",
             "app_mode": active_settings.app_mode,
             "provider": active_settings.provider,
             "model": active_settings.model,
@@ -374,7 +374,7 @@ def create_app(
 
     @app.get("/api/project")
     async def project_info() -> dict[str, str]:
-        return {"project_root": str(PROJECT_ROOT), "version": "3.1.0"}
+        return {"project_root": str(PROJECT_ROOT), "version": "3.1.1"}
 
     return app
 
