@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from app.models import RunStatus
@@ -82,7 +82,7 @@ class ConversationState:
 
         workspace = ConversationStore.normalise_workspace(self.project or {})
         active_id = workspace["active_project_id"]
-        project = json.loads(json.dumps(workspace["projects"][active_id]))
+        project = cast(dict[str, Any], json.loads(json.dumps(workspace["projects"][active_id])))
         project["__workspace"] = workspace
         project["__active_project_id"] = active_id
         return project
@@ -163,7 +163,7 @@ class ConversationStore:
     def normalise_workspace(cls, saved: dict[str, Any]) -> dict[str, Any]:
         """Migrate legacy single-project JSON in place, without losing work."""
 
-        value = json.loads(json.dumps(saved or {}))
+        value = cast(dict[str, Any], json.loads(json.dumps(saved or {})))
         if "projects" in value and "active_project_id" in value:
             workspace = value
         else:
@@ -218,7 +218,7 @@ class ConversationStore:
             project.setdefault("created_at", cls._now())
             project.setdefault("updated_at", cls._now())
         cls._cleanup_archived(workspace)
-        return workspace
+        return cast(dict[str, Any], workspace)
 
     @classmethod
     def _cleanup_archived(cls, workspace: dict[str, Any]) -> None:
@@ -494,9 +494,9 @@ class QingxiaodaConversation:
                     new_project = ConversationStore._new_project("未命名研究项目")
                     workspace["projects"][new_project["project_id"]] = new_project
                     workspace["active_project_id"] = new_project["project_id"]
-                active = self._project_view(workspace, workspace["active_project_id"])
-                self.store.save(ConversationState(state.session_id, project=active))
-                return "已归档该项目。归档内容会保留 30 天；你可以说“查看归档项目”或“恢复项目：项目名称”。\n\n" + self._menu_for(active)
+                active_view = self._project_view(workspace, workspace["active_project_id"])
+                self.store.save(ConversationState(state.session_id, project=active_view))
+                return "已归档该项目。归档内容会保留 30 天；你可以说“查看归档项目”或“恢复项目：项目名称”。\n\n" + self._menu_for(active_view)
             if message in {"2", "取消", "不用了", "否"}:
                 workspace["pending_action"] = None
                 self.store.save(ConversationState(state.session_id, project=project))
@@ -505,22 +505,22 @@ class QingxiaodaConversation:
 
         if message in {"项目列表", "查看项目", "我的项目"}:
             active_id = workspace["active_project_id"]
-            active = []
-            archived = []
+            active_lines: list[str] = []
+            archived_lines: list[str] = []
             for item in workspace["projects"].values():
                 marker = "（当前）" if item["project_id"] == active_id else ""
                 line = f"- {item['project_name']}{marker}"
-                (archived if item.get("archived_at") else active).append(line)
-            response = "当前项目：\n" + ("\n".join(active) or "- 暂无")
-            if archived:
-                response += "\n\n已归档：\n" + "\n".join(archived)
+                (archived_lines if item.get("archived_at") else active_lines).append(line)
+            response = "当前项目：\n" + ("\n".join(active_lines) or "- 暂无")
+            if archived_lines:
+                response += "\n\n已归档：\n" + "\n".join(archived_lines)
             return response + "\n\n可直接说“切换项目：项目名称”或“新建项目：项目名称”。"
         if message in {"查看归档项目", "归档项目列表"}:
-            archived = [item for item in workspace["projects"].values() if item.get("archived_at")]
-            if not archived:
+            archived_projects = [item for item in workspace["projects"].values() if item.get("archived_at")]
+            if not archived_projects:
                 return "目前没有已归档项目。"
             return "已归档项目（归档后最多保留 30 天）：\n" + "\n".join(
-                f"- {item['project_name']}" for item in archived
+                f"- {item['project_name']}" for item in archived_projects
             ) + "\n\n如需继续，可说“恢复项目：项目名称”。"
 
         command, separator, name = message.partition("：")
@@ -571,7 +571,7 @@ class QingxiaodaConversation:
 
     @staticmethod
     def _project_view(workspace: dict[str, Any], project_id: str) -> dict[str, Any]:
-        view = json.loads(json.dumps(workspace["projects"][project_id]))
+        view = cast(dict[str, Any], json.loads(json.dumps(workspace["projects"][project_id])))
         view["__workspace"] = workspace
         view["__active_project_id"] = project_id
         return view
@@ -744,6 +744,7 @@ class QingxiaodaConversation:
         existing = str(project.get(context_key, "")).strip() if context_key else ""
         if not existing or existing == value.strip():
             return None
+        assert context_key is not None
         label = {
             "research_topic": "研究主题",
             "research_question": "研究问题",
