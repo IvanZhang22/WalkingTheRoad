@@ -48,6 +48,7 @@ ignore = ["E501", "B008"]
 "scripts/run_regression.py" = ["E402"]
 "scripts/run_routing_regression.py" = ["E402"]
 "scripts/run_project_regression.py" = ["E402"]
+"scripts/run_real_multimodal_acceptance.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.12"
