@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +53,17 @@ def _make_llm(settings: Settings) -> LLMClient:
     if settings.app_mode == "mock":
         return MockLLMClient()
     return OpenAICompatibleClient(settings)
+
+
+def _conversation_database_path() -> Path:
+    """Resolve a writable SQLite path for the current runtime."""
+
+    configured_path = os.getenv("CONVERSATION_DATABASE_PATH", "").strip()
+    if configured_path:
+        return Path(configured_path).expanduser()
+    if os.getenv("VERCEL", "").strip():
+        return Path(tempfile.gettempdir()) / "xingxiaodao" / "qingxiaoda_conversations.sqlite3"
+    return PROJECT_ROOT / "data" / "qingxiaoda_conversations.sqlite3"
 
 
 def create_app(
@@ -125,7 +138,7 @@ def create_app(
     )
     app.state.conversation = (
         QingxiaodaConversation(
-            database_path=PROJECT_ROOT / "data" / "qingxiaoda_conversations.sqlite3",
+            database_path=_conversation_database_path(),
             workflow_service=app.state.workflow_service,
             material_ingestor=app.state.material_ingestor,
         )
