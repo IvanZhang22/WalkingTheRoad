@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from typing import Any, Protocol
@@ -21,16 +22,16 @@ from app.multimodal.models import Material
 
 MAIN_MENU = """你好，我是行小道，你的社会实践与社会科学调研智能助手。
 
-我可以陪你完成研究设计、访谈设计、材料分析、证据质检与补访建议。你可以直接用自己的话告诉我遇到了什么问题，也可以选择一个任务：
+我可以陪你完成研究设计、访谈设计、材料分析、证据质检与补访建议。直接用自己的话说出你现在遇到的问题就可以；如果你愿意，也可选择：
 
-1. 把一个想法变成研究方案
-2. 设计或检查访谈
-3. 整理和分析已有材料
-4. 检查研究结论是否站得住
+1. 研究设计：把一个想法变成研究方案
+2. 访谈设计：设计或检查访谈
+3. 材料分析：整理已有访谈或田野材料
+4. 结论质检：检查研究结论是否站得住
 
 行小道不会虚构访谈、编造数据或原始引文，也不会把有限质性样本包装成总体结论。AI 的建议需要由你结合原始材料和导师意见确认。
 
-请回复 1、2、3 或 4；不知道选哪个，就直接说说你现在做到哪一步。任何时候可回复“主菜单”“上一步”或“结束”。"""
+你随时可以说“回到项目主页”“上一步”“结束”“新建项目：项目名称”或“项目列表”。"""
 
 WORKFLOW_TITLES = {
     "w1": "研究设计",
@@ -72,14 +73,30 @@ class ConversationState:
         return dict(self.fields or {})
 
     def project_values(self) -> dict[str, Any]:
-        project = dict(self.project or {})
-        project.setdefault("workflow_status", {})
-        project.setdefault("results", {})
+        """Return the active project while keeping its session workspace attached.
+
+        The attachment is internal-only (``__workspace``).  It lets the older
+        workflow code continue to pass a plain project dict around, while the
+        store persists every project's own fields and interaction state.
+        """
+
+        workspace = ConversationStore.normalise_workspace(self.project or {})
+        active_id = workspace["active_project_id"]
+        project = json.loads(json.dumps(workspace["projects"][active_id]))
+        project["__workspace"] = workspace
+        project["__active_project_id"] = active_id
         return project
 
 
 class ConversationStore:
-    """很小的 SQLite 状态库；可跨 Uvicorn 重启保存同一会话的进度。"""
+    """SQLite-backed, per-session project workspace.
+
+    ``conversation_state`` is deliberately kept for backward compatibility.
+    Its JSON column now contains a lightweight workspace, not a single global
+    project: several named projects can coexist in one Qingxiaoda session.
+    """
+
+    ARCHIVE_RETENTION_DAYS = 30
 
     def __init__(self, database_path: Path) -> None:
         database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,6 +123,214 @@ class ConversationStore:
                     "ALTER TABLE conversation_state ADD COLUMN project_json TEXT NOT NULL DEFAULT '{}'"
                 )
 
+    @staticmethod
+    def _now() -> str:
+        return datetime.now(UTC).isoformat()
+
+    @classmethod
+    def _new_project(cls, name: str = "当前研究项目") -> dict[str, Any]:
+        now = cls._now()
+        return {
+            "project_id": uuid4().hex,
+            "project_name": name,
+            "current_stage": "项目主页",
+            "current_workflow": "",
+            "research_topic": "",
+            "research_question": "",
+            "target_group": "",
+            "research_location": "",
+            "research_method": "",
+            "uploaded_materials": [],
+            "confirmed_findings": [],
+            "pending_questions": [],
+            "workflow_status": {
+                "w1": "NOT_STARTED",
+                "w2": "NOT_STARTED",
+                "w3": "NOT_STARTED",
+                "w4": "NOT_STARTED",
+            },
+            "results": {},
+            "last_user_intent": "",
+            "last_system_action": "",
+            "active_menu": {"menu_id": "main_menu", "status": "ACTIVE", "options": {}},
+            "interaction": {"workflow_id": None, "step": "menu", "fields": {}},
+            "archived_at": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    @classmethod
+    def normalise_workspace(cls, saved: dict[str, Any]) -> dict[str, Any]:
+        """Migrate legacy single-project JSON in place, without losing work."""
+
+        value = json.loads(json.dumps(saved or {}))
+        if "projects" in value and "active_project_id" in value:
+            workspace = value
+        else:
+            legacy = value
+            project = cls._new_project(legacy.get("project_name") or "当前研究项目")
+            for key, item in legacy.items():
+                if key not in {"__workspace", "__active_project_id"}:
+                    project[key] = item
+            project.setdefault("interaction", {})
+            project["interaction"].setdefault("workflow_id", None)
+            project["interaction"].setdefault("step", "menu")
+            project["interaction"].setdefault("fields", {})
+            workspace = {
+                "schema_version": 2,
+                "active_project_id": project["project_id"],
+                "projects": {project["project_id"]: project},
+                "pending_action": None,
+            }
+        workspace.setdefault("schema_version", 2)
+        workspace.setdefault("pending_action", None)
+        projects = workspace.setdefault("projects", {})
+        if not projects:
+            project = cls._new_project()
+            projects[project["project_id"]] = project
+            workspace["active_project_id"] = project["project_id"]
+        if workspace.get("active_project_id") not in projects:
+            workspace["active_project_id"] = next(iter(projects))
+        for project_id, project in list(projects.items()):
+            if not isinstance(project, dict):
+                projects[project_id] = cls._new_project("当前研究项目")
+                project = projects[project_id]
+            project.setdefault("project_id", project_id)
+            project.setdefault("project_name", "当前研究项目")
+            for key in (
+                "current_stage", "current_workflow", "research_topic", "research_question",
+                "target_group", "research_location", "research_method", "last_user_intent",
+                "last_system_action",
+            ):
+                project.setdefault(key, "")
+            for key in ("uploaded_materials", "confirmed_findings", "pending_questions"):
+                project.setdefault(key, [])
+            project.setdefault("results", {})
+            statuses = project.setdefault("workflow_status", {})
+            for workflow_id in WORKFLOW_TITLES:
+                statuses.setdefault(workflow_id, "NOT_STARTED")
+            project.setdefault("active_menu", {"menu_id": "main_menu", "status": "ACTIVE", "options": {}})
+            interaction = project.setdefault("interaction", {})
+            interaction.setdefault("workflow_id", None)
+            interaction.setdefault("step", "menu")
+            interaction.setdefault("fields", {})
+            project.setdefault("archived_at", None)
+            project.setdefault("created_at", cls._now())
+            project.setdefault("updated_at", cls._now())
+        cls._cleanup_archived(workspace)
+        return workspace
+
+    @classmethod
+    def _cleanup_archived(cls, workspace: dict[str, Any]) -> None:
+        cutoff = datetime.now(UTC) - timedelta(days=cls.ARCHIVE_RETENTION_DAYS)
+        active_id = workspace.get("active_project_id")
+        for project_id, project in list(workspace.get("projects", {}).items()):
+            archived_at = project.get("archived_at")
+            if not archived_at or project_id == active_id:
+                continue
+            try:
+                archived_time = datetime.fromisoformat(str(archived_at))
+                if archived_time.tzinfo is None:
+                    archived_time = archived_time.replace(tzinfo=UTC)
+            except ValueError:
+                continue
+            if archived_time < cutoff:
+                del workspace["projects"][project_id]
+
+    @classmethod
+    def _workspace_for_save(cls, state: ConversationState) -> dict[str, Any]:
+        raw_project = dict(state.project or {})
+        embedded = raw_project.pop("__workspace", None)
+        active_id = raw_project.pop("__active_project_id", None)
+        workspace = cls.normalise_workspace(embedded if isinstance(embedded, dict) else raw_project)
+        active_id = active_id or workspace["active_project_id"]
+        if active_id not in workspace["projects"]:
+            active_id = workspace["active_project_id"]
+        project = workspace["projects"][active_id]
+        # A state save is the sole write-back point for workflow navigation.
+        # This keeps every project's fields isolated when the user switches.
+        for key, value in raw_project.items():
+            if not key.startswith("__"):
+                project[key] = value
+        project["interaction"] = {
+            "workflow_id": state.workflow_id,
+            "step": state.step,
+            "fields": state.field_values(),
+        }
+        cls._sync_project_context(project, state.workflow_id, state.field_values())
+        project["current_workflow"] = state.workflow_id or ""
+        project["current_stage"] = WORKFLOW_TITLES.get(state.workflow_id or "", "项目主页")
+        project["active_menu"] = cls._menu_for_state(state.workflow_id, state.step, project)
+        project["updated_at"] = cls._now()
+        workspace["active_project_id"] = active_id
+        cls._cleanup_archived(workspace)
+        return workspace
+
+    @classmethod
+    def _sync_project_context(
+        cls, project: dict[str, Any], workflow_id: str | None, fields: dict[str, Any]
+    ) -> None:
+        """Persist only fields that the user typed or explicitly retained.
+
+        This intentionally contains no LLM extraction: no missing fact is
+        invented, and the conflict gate in ``QingxiaodaConversation`` runs
+        before a different value can be written.
+        """
+
+        field_map = {
+            "theme": "research_topic",
+            "research_question": "research_question",
+            "review_topic": "research_question",
+            "participant_profile": "target_group",
+            "participants": "target_group",
+        }
+        for source, destination in field_map.items():
+            value = str(fields.get(source, "")).strip()
+            if value:
+                project[destination] = value
+        if workflow_id == "w1" and fields.get("purpose"):
+            project["research_method"] = "社会实践研究设计（待研究者确认）"
+        if workflow_id == "w2" and fields.get("mode"):
+            project["research_method"] = "半结构式访谈（待研究者确认）"
+        if workflow_id == "w3" and fields.get("__material_names"):
+            known = {str(item.get("name")) for item in project.get("uploaded_materials", []) if isinstance(item, dict)}
+            for name in fields["__material_names"]:
+                if name not in known:
+                    project.setdefault("uploaded_materials", []).append(
+                        {"name": name, "added_at": cls._now(), "status": "已读取，待研究者确认用途"}
+                    )
+
+    @staticmethod
+    def _menu_for_state(
+        workflow_id: str | None, step: str, project: dict[str, Any]
+    ) -> dict[str, Any]:
+        options: dict[str, str] = {}
+        menu_id = "free_text"
+        if workflow_id is None or step == "menu":
+            menu_id, options = "main_menu", {"1": "START_W1", "2": "START_W2", "3": "START_W3", "4": "START_W4"}
+        elif step == "mode":
+            menu_id, options = "interview_mode", {"1": "GENERATE_INTERVIEW", "2": "REVIEW_INTERVIEW"}
+        elif step == "source_type":
+            menu_id, options = "material_type", {"1": "ONE_INTERVIEW", "2": "MANY_INTERVIEWS", "3": "FIELD_NOTES", "4": "MIXED_MATERIALS"}
+        elif step == "privacy_consent":
+            menu_id, options = "privacy_consent", {"1": "CONSENT_UPLOAD", "2": "ANONYMISATION_HELP", "3": "CANCEL_UPLOAD"}
+        elif step == "privacy_help":
+            menu_id, options = "privacy_help", {"1": "CONTINUE_UPLOAD", "2": "RETURN_PROJECT_HOME"}
+        elif step == "material_confirm":
+            menu_id, options = "material_confirm", {"1": "ANALYSE_MATERIALS", "2": "RECLASSIFY_MATERIALS", "3": "CANCEL_MATERIALS"}
+        elif step == "low_confidence":
+            menu_id, options = "low_confidence_material", {"1": "UPLOAD_CORRECTED", "2": "USE_HIGH_CONFIDENCE_ONLY", "3": "CANCEL_MATERIALS"}
+        elif step == "result_review":
+            menu_id, options = "result_review", {"1": "CONFIRM_RESULT", "2": "MODIFY_RESULT", "3": "RERUN_WORKFLOW", "4": "RETURN_PROJECT_HOME"}
+        elif step == "after_confirm":
+            menu_id = "after_confirmation"
+            options = {"1": "CONTINUE_NEXT" if workflow_id != "w4" else "RETURN_PROJECT_HOME", "2": "RETURN_PROJECT_HOME" if workflow_id != "w4" else "EXPORT_CONFIRMED"}
+            if workflow_id != "w4":
+                options["3"] = "EXPORT_CONFIRMED"
+        elif step == "conflict_confirm":
+            menu_id, options = "context_conflict", {"1": "REPLACE_CONTEXT", "2": "KEEP_CONTEXT"}
+        return {"menu_id": menu_id, "status": "ACTIVE" if options else "NONE", "options": options, "scope": workflow_id or "project"}
+
     def get(self, session_id: str) -> ConversationState:
         with self._lock:
             row = self._connection.execute(
@@ -113,13 +338,16 @@ class ConversationStore:
                 (session_id,),
             ).fetchone()
         if row is None:
-            return ConversationState(session_id=session_id)
+            return ConversationState(session_id=session_id, project={})
+        workspace = self.normalise_workspace(json.loads(row[3]))
+        project = workspace["projects"][workspace["active_project_id"]]
+        interaction = project.get("interaction", {})
         return ConversationState(
             session_id=session_id,
-            workflow_id=row[0],
-            step=row[1],
-            fields=json.loads(row[2]),
-            project=json.loads(row[3]),
+            workflow_id=interaction.get("workflow_id", row[0]),
+            step=interaction.get("step", row[1]),
+            fields=interaction.get("fields", json.loads(row[2])),
+            project=workspace,
         )
 
     def save(self, state: ConversationState) -> None:
@@ -140,7 +368,7 @@ class ConversationStore:
                     state.workflow_id,
                     state.step,
                     json.dumps(state.field_values(), ensure_ascii=False),
-                    json.dumps(state.project_values(), ensure_ascii=False),
+                    json.dumps(self._workspace_for_save(state), ensure_ascii=False),
                 ),
             )
 
@@ -176,7 +404,11 @@ class QingxiaodaConversation:
         state = self.store.get(safe_session_id)
         message = text.strip()
 
-        if message in {"主菜单", "菜单", "0", "重新开始", "重新选择任务"}:
+        project_command = self._handle_project_command(state, message)
+        if project_command is not None:
+            return project_command
+
+        if self._is_project_home(message):
             menu_state = ConversationState(
                 safe_session_id, fields={}, project=state.project_values()
             )
@@ -193,9 +425,156 @@ class QingxiaodaConversation:
         if safety_reply:
             return safety_reply
 
+        # An explicit natural-language request is always stronger than an old
+        # menu.  The transition writes a new interaction state, invalidating
+        # the previous numeric menu before the next user turn.
+        explicit_workflow = self._explicit_workflow_intent(message)
+        if explicit_workflow is not None:
+            project = state.project_values()
+            project["last_user_intent"] = f"切换至{WORKFLOW_TITLES[explicit_workflow]}"
+            return self._start_workflow(
+                ConversationState(safe_session_id, fields={}, project=project), explicit_workflow
+            )
+        if self._is_export_intent(message):
+            self.store.save(ConversationState(safe_session_id, fields={}, project=state.project_values()))
+            return self._export_reply(state.project_values())
+
         if state.workflow_id is None:
             return await self._choose_workflow(state, message, attachments)
         return await self._continue_workflow(state, message, attachments)
+
+    @staticmethod
+    def _is_project_home(message: str) -> bool:
+        return message.strip() in {
+            "主菜单", "菜单", "0", "重新开始", "重新选择任务", "项目主页", "回到项目主页",
+            "返回项目主页", "回主页",
+        }
+
+    @staticmethod
+    def _is_export_intent(message: str) -> bool:
+        return any(token in message for token in ("导出", "下载当前成果", "导出成果"))
+
+    @staticmethod
+    def _explicit_workflow_intent(message: str) -> str | None:
+        """Recognise only clear task switches; never infer facts from it."""
+
+        text = message.lower()
+        if any(token in text for token in ("改访谈", "修改访谈", "访谈提纲", "访谈问题", "设计访谈")):
+            return "w2"
+        if any(token in text for token in ("分析材料", "分析访谈", "主题分析", "编码", "提炼主题", "田野笔记")):
+            return "w3"
+        if any(token in text for token in ("核验证据", "检查结论", "结论质检", "反例", "证据是否")):
+            return "w4"
+        if any(token in text for token in ("研究设计", "收窄选题", "聚焦选题", "变成研究问题")):
+            return "w1"
+        return None
+
+    def _handle_project_command(self, state: ConversationState, message: str) -> str | None:
+        """Handle lightweight named projects within one Qingxiaoda session."""
+
+        project = state.project_values()
+        workspace = project["__workspace"]
+        pending = workspace.get("pending_action")
+        if pending and pending.get("type") == "archive":
+            if message in {"1", "确认", "确认归档", "好的", "是"}:
+                target = workspace["projects"].get(pending["project_id"])
+                if target is None:
+                    workspace["pending_action"] = None
+                    self.store.save(ConversationState(state.session_id, project=project))
+                    return "要归档的项目已经不存在了。"
+                target["archived_at"] = ConversationStore._now()
+                workspace["pending_action"] = None
+                available = [
+                    candidate for candidate in workspace["projects"].values()
+                    if candidate["project_id"] != target["project_id"] and not candidate.get("archived_at")
+                ]
+                if available:
+                    workspace["active_project_id"] = available[0]["project_id"]
+                else:
+                    new_project = ConversationStore._new_project("未命名研究项目")
+                    workspace["projects"][new_project["project_id"]] = new_project
+                    workspace["active_project_id"] = new_project["project_id"]
+                active = self._project_view(workspace, workspace["active_project_id"])
+                self.store.save(ConversationState(state.session_id, project=active))
+                return "已归档该项目。归档内容会保留 30 天；你可以说“查看归档项目”或“恢复项目：项目名称”。\n\n" + self._menu_for(active)
+            if message in {"2", "取消", "不用了", "否"}:
+                workspace["pending_action"] = None
+                self.store.save(ConversationState(state.session_id, project=project))
+                return "好的，项目仍保留在当前列表中。"
+            return "是否归档这个项目？回复“确认归档”或“取消”。"
+
+        if message in {"项目列表", "查看项目", "我的项目"}:
+            active_id = workspace["active_project_id"]
+            active = []
+            archived = []
+            for item in workspace["projects"].values():
+                marker = "（当前）" if item["project_id"] == active_id else ""
+                line = f"- {item['project_name']}{marker}"
+                (archived if item.get("archived_at") else active).append(line)
+            response = "当前项目：\n" + ("\n".join(active) or "- 暂无")
+            if archived:
+                response += "\n\n已归档：\n" + "\n".join(archived)
+            return response + "\n\n可直接说“切换项目：项目名称”或“新建项目：项目名称”。"
+        if message in {"查看归档项目", "归档项目列表"}:
+            archived = [item for item in workspace["projects"].values() if item.get("archived_at")]
+            if not archived:
+                return "目前没有已归档项目。"
+            return "已归档项目（归档后最多保留 30 天）：\n" + "\n".join(
+                f"- {item['project_name']}" for item in archived
+            ) + "\n\n如需继续，可说“恢复项目：项目名称”。"
+
+        command, separator, name = message.partition("：")
+        if not separator:
+            command, separator, name = message.partition(":")
+        if not separator:
+            return None
+        name = name.strip()
+        if command.strip() not in {"新建项目", "切换项目", "归档项目", "恢复项目"}:
+            return None
+        if not name:
+            return "请在冒号后补充项目名称，例如“新建项目：返乡青年创业调研”。"
+        matches = [item for item in workspace["projects"].values() if item["project_name"] == name]
+        if command.strip() == "新建项目":
+            if matches:
+                existing = matches[0]
+                action = "恢复" if existing.get("archived_at") else "切换"
+                return f"已存在名为“{name}”的项目。请使用“{action}项目：{name}”，或换一个名称。"
+            new_project = ConversationStore._new_project(name)
+            workspace["projects"][new_project["project_id"]] = new_project
+            workspace["active_project_id"] = new_project["project_id"]
+            active = self._project_view(workspace, new_project["project_id"])
+            self.store.save(ConversationState(state.session_id, project=active))
+            return f"已新建项目“{name}”。\n\n" + self._menu_for(new_project)
+        if not matches:
+            return f"没有找到“{name}”。可先说“项目列表”查看名称。"
+        target = matches[0]
+        if command.strip() == "切换项目":
+            if target.get("archived_at"):
+                return f"“{name}”已归档。请先说“恢复项目：{name}”。"
+            workspace["active_project_id"] = target["project_id"]
+            active = self._project_view(workspace, target["project_id"])
+            self.store.save(ConversationState(state.session_id, project=active))
+            return f"已切换到“{name}”。\n\n" + self._menu_for(target)
+        if command.strip() == "归档项目":
+            if target.get("archived_at"):
+                return f"“{name}”已经归档。"
+            workspace["pending_action"] = {"type": "archive", "project_id": target["project_id"]}
+            self.store.save(ConversationState(state.session_id, project=project))
+            return f"归档后“{name}”会从日常项目列表隐藏，并在 30 天后清理。确认归档吗？\n\n1. 确认归档\n2. 取消"
+        if not target.get("archived_at"):
+            return f"“{name}”当前没有归档，可以直接切换。"
+        target["archived_at"] = None
+        workspace["active_project_id"] = target["project_id"]
+        active = self._project_view(workspace, target["project_id"])
+        self.store.save(ConversationState(state.session_id, project=active))
+        return f"已恢复并切换到“{name}”。\n\n" + self._menu_for(target)
+
+    @staticmethod
+    def _project_view(workspace: dict[str, Any], project_id: str) -> dict[str, Any]:
+        view = json.loads(json.dumps(workspace["projects"][project_id]))
+        view["__workspace"] = workspace
+        view["__active_project_id"] = project_id
+        return view
 
     async def _choose_workflow(
         self,
@@ -210,27 +589,17 @@ class QingxiaodaConversation:
             candidates = self._candidate_workflows(message)
             if len(candidates) == 1:
                 guessed = candidates[0]
-                return (
-                    f"根据你的描述，我建议先做“{WORKFLOW_TITLES[guessed]}”。\n"
-                    f"原因：{self._route_reason(guessed)}\n\n"
-                    f"回复“{self._number_for(guessed)}”进入；也可以回复其他数字自行选择。\n\n"
-                    f"{self._menu_for(state.project_values())}"
-                )
+                return self._start_workflow(state, guessed)
             if len(candidates) == 2:
                 first, second = candidates
                 return (
-                    "你现在可能处在两个相邻阶段：\n\n"
-                    f"{self._number_for(first)}. {WORKFLOW_TITLES[first]}——{self._route_reason(first)}\n"
-                    f"{self._number_for(second)}. {WORKFLOW_TITLES[second]}——{self._route_reason(second)}\n\n"
-                    "请回复数字选择。你始终可以自行纠正我的建议。"
+                    "我还需要确认一件事：你现在是准备收集材料，还是已经有材料需要处理？\n\n"
+                    f"- 如果在准备访谈或观察，我可以先帮你做{WORKFLOW_TITLES[first]}；\n"
+                    f"- 如果已有逐字稿、录音或田野笔记，我可以先做{WORKFLOW_TITLES[second]}。\n\n"
+                    "直接说说你手头已有的材料即可。"
                 )
-            return (
-                "我还不能准确判断哪一步最适合你。哪一种最接近你的情况？\n\n"
-                "1. 只有一个想法，还不知道具体研究什么\n"
-                "2. 已有研究问题，准备开始访谈\n"
-                "3. 已有访谈或田野材料，需要分析\n"
-                "4. 已形成一些结论，希望检查是否可靠"
-            )
+            self.store.save(ConversationState(state.session_id, fields={}, project=state.project_values()))
+            return self._menu_for(state.project_values())
         started = self._start_workflow(state, selection)
         if attachments:
             return (
@@ -245,24 +614,180 @@ class QingxiaodaConversation:
         statuses = dict(project.get("workflow_status", {}))
         statuses[workflow_id] = "IN_PROGRESS"
         project["workflow_status"] = statuses
+        project["current_workflow"] = workflow_id
+        project["current_stage"] = WORKFLOW_TITLES[workflow_id]
+        project["last_system_action"] = f"开始{WORKFLOW_TITLES[workflow_id]}"
         if workflow_id == "w1":
-            next_state = ConversationState(state.session_id, "w1", "theme", fields, project)
-            prompt = "好的，我们先梳理研究设计。\n\n第一步：请用一句话描述你想研究的社会实践主题。"
+            if project.get("research_topic"):
+                fields["theme"] = project["research_topic"]
+                next_state = ConversationState(state.session_id, "w1", "purpose", fields, project)
+                prompt = f"好，我们继续完善研究设计。当前主题是“{project['research_topic']}”。\n\n你希望通过这项研究理解、解释或改进什么？"
+            else:
+                next_state = ConversationState(state.session_id, "w1", "theme", fields, project)
+                prompt = "好，我们先把想法收成可执行的研究设计。\n\n第一步：请用一句话描述你想研究的社会实践主题。"
         elif workflow_id == "w2":
             next_state = ConversationState(state.session_id, "w2", "mode", fields, project)
-            prompt = "好的，开始访谈设计。请选择：\n\n1. 从零生成一份访谈提纲\n2. 审查我已有的访谈问题\n\n请回复 1 或 2。"
+            prompt = "好，我们来处理访谈。你是想从零起草提纲，还是已经有一组问题希望我审查？\n\n1. 起草访谈提纲\n2. 审查已有问题"
         elif workflow_id == "w3":
+            if project.get("research_question"):
+                fields["research_question"] = project["research_question"]
+                step = "source_id"
+                prompt = f"好，我们直接看已有材料。当前研究问题是“{project['research_question']}”。\n\n请给这批材料取一个便于引用的名称或编号，例如“访谈材料包 A”。"
+            else:
+                step = "research_question"
+                prompt = "好，我们开始材料分析。\n\n第一步：这批材料要回答的研究问题是什么？"
             next_state = ConversationState(
-                state.session_id, "w3", "research_question", fields, project
+                state.session_id, "w3", step, fields, project
             )
-            prompt = "好的，开始材料分析。\n\n第一步：这批材料要回答的研究问题是什么？"
         else:
+            if project.get("research_question"):
+                fields["research_question"] = project["research_question"]
+                step = "candidate_claim"
+                prompt = f"好，我们检查这项研究的结论边界。当前研究问题是“{project['research_question']}”。\n\n请写出需要核验的一条结论或判断。"
+            else:
+                step = "research_question"
+                prompt = "好，我们先明确要检查的研究问题。\n\n请写出这项研究希望回答的研究问题。"
             next_state = ConversationState(
-                state.session_id, "w4", "research_question", fields, project
+                state.session_id, "w4", step, fields, project
             )
-            prompt = "好的，开始结论质检。\n\n第一步：请写出这项研究希望回答的研究问题。"
         self.store.save(next_state)
         return prompt
+
+    def _resolve_menu_input(self, state: ConversationState, message: str) -> str:
+        """Map a numeric or natural-language answer only inside its active menu.
+
+        All existing workflow branches can still consume their small canonical
+        values (``"1"``, ``"2"`` …), but they never receive a value from an
+        earlier screen: the current ``step`` owns the menu mapping.
+        """
+
+        project = state.project_values()
+        menu = project.get("active_menu", {})
+        options = menu.get("options", {}) if menu.get("status") == "ACTIVE" else {}
+        if message.strip().isdigit():
+            return message if message in options else message
+        lowered = message.lower()
+        step = state.step
+        natural: dict[str, tuple[tuple[str, ...], str]] = {
+            "mode": (("从零", "起草", "生成", "新建", "设计"), "1"),
+            "source_type": (("单份", "一个受访者"), "1"),
+            "privacy_consent": (("确认", "有权", "同意", "可以上传"), "1"),
+            "privacy_help": (("已匿名", "继续", "上传"), "1"),
+            "material_confirm": (("分类正确", "开始分析", "开始", "确认分析"), "1"),
+            "low_confidence": (("上传校对", "更清晰", "重新上传"), "1"),
+            "result_review": (("确认采用", "确认结果", "采用", "确认"), "1"),
+            "after_confirm": (("继续", "下一步"), "1"),
+            "conflict_confirm": (("替换", "更新", "使用新的", "确认修改"), "1"),
+        }
+        # Multi-choice menus whose text could otherwise overlap are handled
+        # before their generic positive action.
+        if step == "mode":
+            if any(token in lowered for token in ("审查", "检查已有", "已有问题", "修改已有")):
+                return "2"
+        elif step == "source_type":
+            if any(token in lowered for token in ("多份", "多位", "多个人")):
+                return "2"
+            if any(token in lowered for token in ("田野", "观察")):
+                return "3"
+            if "混合" in lowered:
+                return "4"
+        elif step == "privacy_consent":
+            if "匿名" in lowered and not any(token in lowered for token in ("已匿名", "匿名化完成")):
+                return "2"
+            if any(token in lowered for token in ("取消", "不上传", "暂不")):
+                return "3"
+        elif step == "privacy_help":
+            if any(token in lowered for token in ("主菜单", "项目主页", "返回")):
+                return "2"
+        elif step == "material_confirm":
+            if any(token in lowered for token in ("修改", "分类", "用途说明")):
+                return "2"
+            if any(token in lowered for token in ("取消", "不分析", "暂不")):
+                return "3"
+        elif step == "low_confidence":
+            if any(token in lowered for token in ("只用", "忽略低置信", "高置信")):
+                return "2"
+            if any(token in lowered for token in ("取消", "不分析", "暂不")):
+                return "3"
+        elif step == "result_review":
+            if any(token in lowered for token in ("修改", "调整", "不符合", "不对")):
+                return "2"
+            if any(token in lowered for token in ("重新运行", "重做", "再跑")):
+                return "3"
+            if any(token in lowered for token in ("主菜单", "项目主页", "返回")):
+                return "4"
+        elif step == "after_confirm":
+            if any(token in lowered for token in ("导出", "下载")):
+                return "3" if state.workflow_id != "w4" else "2"
+            if any(token in lowered for token in ("主页", "主菜单", "返回")):
+                return "2" if state.workflow_id != "w4" else "1"
+        elif step == "conflict_confirm":
+            if any(token in lowered for token in ("保留", "不改", "原来的", "取消")):
+                return "2"
+        tokens_and_choice = natural.get(step)
+        if tokens_and_choice and any(token in lowered for token in tokens_and_choice[0]):
+            return tokens_and_choice[1]
+        return message
+
+    @staticmethod
+    def _context_key_for_field(field: str) -> str | None:
+        return {
+            "theme": "research_topic",
+            "research_question": "research_question",
+            "review_topic": "research_question",
+            "participant_profile": "target_group",
+            "participants": "target_group",
+        }.get(field)
+
+    def _context_conflict(self, project: dict[str, Any], field: str, value: str) -> str | None:
+        context_key = self._context_key_for_field(field)
+        existing = str(project.get(context_key, "")).strip() if context_key else ""
+        if not existing or existing == value.strip():
+            return None
+        label = {
+            "research_topic": "研究主题",
+            "research_question": "研究问题",
+            "target_group": "研究对象",
+        }[context_key]
+        return (
+            f"你刚补充的{label}与当前项目已记录的信息不一致。\n\n"
+            f"当前：{existing}\n新的：{value.strip()}\n\n"
+            "要用新的内容替换当前项目记录吗？\n1. 替换为新的内容\n2. 保留当前内容"
+        )
+
+    def _handle_context_conflict(self, state: ConversationState, message: str) -> str:
+        fields = state.field_values()
+        project = state.project_values()
+        field = str(fields.pop("__pending_context_field", ""))
+        value = str(fields.pop("__pending_context_value", "")).strip()
+        if not field or not value:
+            self.store.save(ConversationState(state.session_id, state.workflow_id, "menu", fields, project))
+            return self._menu_for(project)
+        if message == "1":
+            fields[field] = value
+            project["last_system_action"] = "已按研究者确认更新项目上下文"
+            return self._advance_after_context_resolution(state, fields, project, field)
+        if message == "2":
+            context_key = self._context_key_for_field(field)
+            if context_key:
+                fields[field] = str(project.get(context_key, ""))
+            return self._advance_after_context_resolution(state, fields, project, field)
+        return "请回复“替换为新的内容”或“保留当前内容”。"
+
+    def _advance_after_context_resolution(
+        self,
+        state: ConversationState,
+        fields: dict[str, Any],
+        project: dict[str, Any],
+        field: str,
+    ) -> str:
+        workflow_id = state.workflow_id
+        assert workflow_id is not None
+        next_step, next_prompt = self._next_step(workflow_id, field, fields)
+        if next_step is not None:
+            self.store.save(ConversationState(state.session_id, workflow_id, next_step, fields, project))
+            return next_prompt
+        return "已更新当前项目记录。请继续说明你希望如何推进；也可以回到项目主页。"
 
     async def _continue_workflow(
         self,
@@ -274,6 +799,11 @@ class QingxiaodaConversation:
         assert workflow_id is not None
         fields = state.field_values()
         project = state.project_values()
+
+        message = self._resolve_menu_input(state, message)
+
+        if state.step == "conflict_confirm":
+            return self._handle_context_conflict(state, message)
 
         if state.step == "result_review":
             return await self._review_result(state, message)
@@ -323,10 +853,15 @@ class QingxiaodaConversation:
             if message not in {"1", "2"}:
                 return "请回复 1（从零生成）或 2（审查已有问题）。"
             fields["mode"] = "generate" if message == "1" else "review"
-            step = "research_question" if message == "1" else "review_topic"
+            if message == "1" and project.get("research_question"):
+                fields["research_question"] = project["research_question"]
+                step = "participant_profile"
+            else:
+                step = "research_question" if message == "1" else "review_topic"
             self.store.save(ConversationState(state.session_id, workflow_id, step, fields, project))
             return (
-                "请写出你想回答的研究问题。"
+                (f"我会沿用当前研究问题：“{project['research_question']}”。\n\n计划访谈谁？请描述对象范围或筛选条件。"
+                 if message == "1" and project.get("research_question") else "请写出你想回答的研究问题。")
                 if message == "1"
                 else "请写出这组问题对应的研究主题或研究问题。"
             )
@@ -359,6 +894,14 @@ class QingxiaodaConversation:
             message = ""
         elif message == "跳过":
             return "这一项是完成当前任务所必需的信息，请用自己的话补充。"
+        conflict = self._context_conflict(project, state.step, message)
+        if conflict is not None:
+            fields["__pending_context_field"] = state.step
+            fields["__pending_context_value"] = message
+            self.store.save(
+                ConversationState(state.session_id, workflow_id, "conflict_confirm", fields, project)
+            )
+            return conflict
         fields[state.step] = message
         next_step, next_prompt = self._next_step(workflow_id, state.step, fields)
         if next_step is not None:
@@ -476,7 +1019,8 @@ class QingxiaodaConversation:
         return (
             f"## {title}（待你确认）\n\n{completed.final_markdown or ''}\n\n"
             "---\n这是一份 AI 生成的研究辅助结果，不会自动成为正式研究结论。\n\n"
-            "1. 确认采用当前结果\n2. 说明我想修改的部分\n3. 重新运行当前步骤\n4. 返回主菜单"
+            "请先结合你的田野判断核对它。你可以直接说“确认采用”“我想修改……”或“重新运行”。\n\n"
+            "1. 确认采用当前结果\n2. 说明我想修改的部分\n3. 重新运行当前步骤\n4. 返回项目主页"
         )
 
     def _go_back(self, state: ConversationState) -> str:
@@ -517,8 +1061,6 @@ class QingxiaodaConversation:
 
     def _menu_for(self, project: dict[str, Any]) -> str:
         statuses = project.get("workflow_status", {})
-        if not statuses:
-            return MAIN_MENU
         status_names = {
             "NOT_STARTED": "未开始",
             "IN_PROGRESS": "进行中",
@@ -526,10 +1068,22 @@ class QingxiaodaConversation:
             "HUMAN_CONFIRMED": "已由研究者确认",
         }
         progress = "\n".join(
-            f"{WORKFLOW_TITLES[workflow_id]}：{status_names.get(status, status)}"
-            for workflow_id, status in statuses.items()
+            f"- {WORKFLOW_TITLES[workflow_id]}：{status_names.get(statuses.get(workflow_id), statuses.get(workflow_id))}"
+            for workflow_id in WORKFLOW_TITLES
         )
-        return f"当前项目进度：\n{progress}\n\n{MAIN_MENU}"
+        known = []
+        if project.get("research_topic"):
+            known.append(f"研究主题：{project['research_topic']}")
+        if project.get("research_question"):
+            known.append(f"研究问题：{project['research_question']}")
+        if project.get("target_group"):
+            known.append(f"研究对象：{project['target_group']}")
+        summary = "\n".join(f"- {item}" for item in known) or "- 还没有记录核心研究信息"
+        return (
+            f"当前项目：{project.get('project_name') or '当前研究项目'}\n\n"
+            f"已知信息：\n{summary}\n\n"
+            f"进度：\n{progress}\n\n{MAIN_MENU}"
+        )
 
     def _ending_for(self, project: dict[str, Any]) -> str:
         statuses = project.get("workflow_status", {})
@@ -705,17 +1259,31 @@ class QingxiaodaConversation:
             statuses = dict(project.get("workflow_status", {}))
             statuses[workflow_id] = "HUMAN_CONFIRMED"
             project["workflow_status"] = statuses
+            confirmed = list(project.get("confirmed_findings", []))
+            result = str(project.get("results", {}).get(workflow_id, "")).strip()
+            if result and not any(item.get("workflow_id") == workflow_id for item in confirmed if isinstance(item, dict)):
+                confirmed.append(
+                    {
+                        "workflow_id": workflow_id,
+                        "title": WORKFLOW_TITLES[workflow_id],
+                        "confirmed_at": ConversationStore._now(),
+                        "note": "研究者确认采用 AI 辅助结果；仍应回查原始材料。",
+                    }
+                )
+            project["confirmed_findings"] = confirmed
+            project["last_system_action"] = f"研究者确认{WORKFLOW_TITLES[workflow_id]}结果"
             self.store.save(
                 ConversationState(state.session_id, workflow_id, "after_confirm", fields, project)
             )
             next_workflow = {"w1": "w2", "w2": "w3", "w3": "w4"}.get(workflow_id)
             if next_workflow:
                 return (
-                    f"已记录：当前{WORKFLOW_TITLES[workflow_id]}结果由研究者确认。"
-                    "AI 生成不等于研究结论；这一步确认表示它符合你对材料和田野语境的判断。\n\n"
-                    f"1. 继续{WORKFLOW_TITLES[next_workflow]}\n2. 返回主菜单\n3. 导出当前已确认成果"
+                    f"已记录：这份{WORKFLOW_TITLES[workflow_id]}结果由你确认采用。"
+                    "这不替代对原始材料和田野语境的复核。\n\n"
+                    f"接下来可以继续{WORKFLOW_TITLES[next_workflow]}，也可以回到项目主页或导出已确认成果。\n\n"
+                    f"1. 继续{WORKFLOW_TITLES[next_workflow]}\n2. 返回项目主页\n3. 导出当前已确认成果"
                 )
-            return "已记录：当前证据质检结果由研究者确认。\n\n1. 返回主菜单\n2. 导出当前已确认成果"
+            return "已记录：这份证据质检结果由你确认采用。\n\n1. 返回项目主页\n2. 导出当前已确认成果"
         if message == "2":
             self.store.save(
                 ConversationState(state.session_id, workflow_id, "result_modify", fields, project)
@@ -878,7 +1446,7 @@ class QingxiaodaConversation:
             "review_participant": "这组问题准备问谁？没有可回复“跳过”。",
             "review_requirements": "还有什么特殊要求？没有可回复“跳过”。",
             "source_id": "请给这批材料取一个便于引用的名称或编号，例如“访谈材料包 A”。",
-            "source_type": "材料类型请选择：\n1. 单份访谈\n2. 多份访谈\n3. 田野或观察笔记\n4. 混合材料\n\n请回复数字。",
+            "source_type": "这批材料属于哪一类？\n1. 单份访谈（一个受访者的一份记录）\n2. 多份访谈\n3. 田野或观察笔记\n4. 混合材料\n\n回复编号，或直接说材料类型都可以。",
             "source_context": "请补充采集场景、对象范围、日期或材料限制；没有可回复“跳过”。",
             "candidate_claim": "请写出需要核验的一条结论或判断。",
             "target_population": "这条结论原本想讨论的目标群体是谁？",
