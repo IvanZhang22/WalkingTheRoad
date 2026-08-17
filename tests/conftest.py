@@ -12,10 +12,9 @@ def isolate_qingxiaoda_conversation_database(
 ) -> None:
     """Keep session state from one test run out of every other test run.
 
-    Production deliberately stores Qingxiaoda conversations under the project
-    data directory.  Tests must instead use pytest's per-test temporary root,
-    otherwise a reused sessionId can make a second pytest invocation inherit
-    an earlier conversation state.
+    Local runs store Qingxiaoda conversations under the project data directory.
+    Tests use pytest's per-test temporary root so a reused sessionId cannot make
+    a second pytest invocation inherit an earlier conversation state.
     """
 
     monkeypatch.setattr("app.main.PROJECT_ROOT", tmp_path)
