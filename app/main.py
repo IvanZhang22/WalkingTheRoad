@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import tempfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
+from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
@@ -22,6 +24,7 @@ from app.config import PROJECT_ROOT, Settings, get_settings
 from app.conversation import QingxiaodaConversation
 from app.llm import LLMClient, LLMError, MockLLMClient, OpenAICompatibleClient
 from app.models import IntentRouteRequest, IntentRouteResult, ProjectContext
+from app.multimodal.audio_relay import TemporaryAudioRelay
 from app.multimodal.service import (
     MaterialIngestService,
     build_live_ingest_service,
@@ -41,6 +44,7 @@ from app.run_store import RunStore
 from app.workflows import WorkflowService, workflow_specs_json
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+logger = logging.getLogger("xingxiaodao.request_validation")
 
 
 class Utf8JSONResponse(JSONResponse):
@@ -85,13 +89,22 @@ def create_app(
     app = FastAPI(
         default_response_class=Utf8JSONResponse,
         title="行小道本地 Agent",
-        version="3.1.1",
+        version="3.1.2",
         description="四工作流全代码版：OpenAI 兼容协议、项目卡串联与协作发布基线",
     )
     app.state.settings = active_settings
     app.state.store = store
     app.state.llm = active_llm
     app.state.llm_error = llm_error
+    audio_relay = (
+        TemporaryAudioRelay(
+            public_base_url=active_settings.asr_relay_public_base_url,
+            ttl_seconds=active_settings.asr_relay_ttl_seconds,
+            ffmpeg_path=active_settings.asr_relay_ffmpeg_path,
+        )
+        if active_settings.asr_relay_configured
+        else None
+    )
     multimodal_provider = "injected" if material_ingestor is not None else "live"
     if material_ingestor is not None:
         app.state.material_ingestor = material_ingestor
@@ -125,6 +138,7 @@ def create_app(
             baidu_ocr_endpoint_path=active_settings.baidu_ocr_endpoint_path,
             baidu_ocr_timeout=active_settings.baidu_ocr_timeout_seconds,
             baidu_ocr_max_pages=active_settings.baidu_ocr_max_pages,
+            audio_relay=audio_relay,
         )
     app.state.workflow_service = (
         WorkflowService(
@@ -146,9 +160,32 @@ def create_app(
         else None
     )
     app.state.multimodal_provider = multimodal_provider
+    app.state.audio_relay = audio_relay
     app.state.tasks = set()
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_error(
+        request: Request, exc: RequestValidationError
+    ) -> Utf8JSONResponse:
+        if request.url.path == "/v1/chat/completions":
+            locations = [
+                ".".join(str(part) for part in item.get("loc", ()))[:240]
+                for item in exc.errors()[:12]
+            ]
+            kinds = [str(item.get("type", "validation_error"))[:80] for item in exc.errors()[:12]]
+            logger.warning("qingxiaoda_request_validation fields=%s types=%s", locations, kinds)
+        return Utf8JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            content={
+                "error": {
+                    "message": "请求中的附件字段无法识别，请检查服务端兼容版本。",
+                    "type": "invalid_request_error",
+                    "code": "request_validation_error",
+                }
+            },
+        )
 
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
@@ -158,7 +195,7 @@ def create_app(
     async def health() -> dict[str, Any]:
         return {
             "status": "ok" if app.state.llm is not None else "configuration_required",
-            "version": "3.1.1",
+            "version": "3.1.2",
             "app_mode": active_settings.app_mode,
             "provider": active_settings.provider,
             "model": active_settings.model,
@@ -169,12 +206,27 @@ def create_app(
             "multimodal_provider": app.state.multimodal_provider,
             "asr_provider": active_settings.asr_provider,
             "asr_key_configured": active_settings.asr_key_configured,
+            "asr_relay_configured": active_settings.asr_relay_configured,
             "ocr_provider": active_settings.ocr_provider,
             "ocr_key_configured": active_settings.baidu_ocr_key_configured,
             "large_upload_configured": active_settings.blob_upload_configured,
             "max_upload_mb": active_settings.max_upload_bytes // 1024 // 1024,
             "configuration_error": app.state.llm_error,
         }
+
+    @app.get("/api/internal/asr-audio/{token}", include_in_schema=False)
+    async def relay_audio(token: str) -> FileResponse:
+        if audio_relay is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        material = await audio_relay.take_path(token)
+        if material is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        path, media_type = material
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={"Cache-Control": "no-store, private", "X-Content-Type-Options": "nosniff"},
+        )
 
     @app.get("/api/workflows")
     async def list_workflows() -> list[dict[str, Any]]:
@@ -374,7 +426,7 @@ def create_app(
 
     @app.get("/api/project")
     async def project_info() -> dict[str, str]:
-        return {"project_root": str(PROJECT_ROOT), "version": "3.1.1"}
+        return {"project_root": str(PROJECT_ROOT), "version": "3.1.2"}
 
     return app
 

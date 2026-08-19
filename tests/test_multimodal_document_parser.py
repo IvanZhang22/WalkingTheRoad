@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 import pytest
 from docx import Document
+from openpyxl import Workbook
 from pypdf import PdfWriter
 
 from app.multimodal.contracts import FileContentPart
@@ -61,6 +62,26 @@ async def test_parses_docx_paragraphs_and_tables(tmp_path: Path) -> None:
     assert result.normalized_text == "第一段\n\n字段｜内容"
     assert len(result.segments) == 2
     assert result.segments[1].locator.char_start == len("第一段\n\n")
+
+
+async def test_parses_xlsx_with_sheet_and_row_locations(tmp_path: Path) -> None:
+    path = tmp_path / "material.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "interview"
+    worksheet.append(["participant", "statement"])
+    worksheet.append(["N01", "Service entry is difficult to find"])
+    workbook.save(path)
+    result = await LocalDocumentParser(max_document_chars=1000).parse(
+        downloaded(
+            path,
+            "material.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+    )
+    assert "[工作表：interview]" in result.normalized_text
+    assert "第 2 行：N01 | Service entry is difficult to find" in result.normalized_text
+    assert result.segments[0].locator.char_start == 0
 
 
 async def test_pdf_pages_keep_page_and_global_character_locations(

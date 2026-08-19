@@ -17,6 +17,7 @@ from app.models import IntentRouteResult, RouteConfidence, WorkflowId
 from app.multimodal.contracts import (
     ChatContent,
     FileContentPart,
+    ImageUrlContentPart,
     InputAudioContentPart,
     attachment_parts,
     text_from_content,
@@ -113,7 +114,7 @@ def authorize_bearer(authorization: str | None, expected_key: str) -> None:
 
 def latest_user_input(
     messages: list[ChatMessage],
-) -> tuple[str, list[InputAudioContentPart | FileContentPart]]:
+) -> tuple[str, list[InputAudioContentPart | ImageUrlContentPart | FileContentPart]]:
     for message in reversed(messages):
         if message.role == "user":
             text = text_from_content(message.content)

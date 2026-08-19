@@ -18,11 +18,16 @@ from zipfile import BadZipFile, ZipFile
 
 import httpx
 
-from app.multimodal.contracts import AUDIO_FORMATS, FileContentPart, InputAudioContentPart
+from app.multimodal.contracts import (
+    AUDIO_FORMATS,
+    FileContentPart,
+    ImageUrlContentPart,
+    InputAudioContentPart,
+)
 from app.multimodal.errors import MaterialIngestError
 from app.multimodal.models import DownloadedFile
 
-AttachmentPart = InputAudioContentPart | FileContentPart
+AttachmentPart = InputAudioContentPart | ImageUrlContentPart | FileContentPart
 
 SUPPORTED_MIME: dict[str, frozenset[str]] = {
     "mp3": frozenset({"audio/mpeg", "audio/mp3"}),
@@ -42,6 +47,12 @@ SUPPORTED_MIME: dict[str, frozenset[str]] = {
             "application/zip",
         }
     ),
+    "xlsx": frozenset(
+        {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/zip",
+        }
+    ),
 }
 PREFERRED_MIME = {
     "mp3": "audio/mpeg",
@@ -56,6 +67,7 @@ PREFERRED_MIME = {
     "txt": "text/plain",
     "md": "text/markdown",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 }
 GENERIC_MIME = frozenset({"", "application/octet-stream", "binary/octet-stream"})
 REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
@@ -362,8 +374,18 @@ def stage_uploaded_file(
 def _source_fields(source: AttachmentPart) -> tuple[str, str, str]:
     if isinstance(source, InputAudioContentPart):
         url = source.input_audio.url
-        suffix = source.input_audio.format
+        suffix: str = source.input_audio.format
         filename = PurePosixPath(unquote(urlsplit(url).path)).name or f"audio.{suffix}"
+        return url, filename, suffix
+    if isinstance(source, ImageUrlContentPart):
+        url = source.image_url.url
+        filename = source.image_url.filename or PurePosixPath(unquote(urlsplit(url).path)).name
+        suffix = PurePosixPath(filename).suffix.lower().lstrip(".")
+        if suffix not in {"png", "jpg", "jpeg", "webp"}:
+            raise MaterialIngestError(
+                "XDW-IMAGE-FORMAT",
+                "图片地址缺少受支持的 png、jpg、jpeg 或 webp 文件扩展名。",
+            )
         return url, filename, suffix
     filename = source.file.filename
     return source.file.url, filename, PurePosixPath(filename).suffix.lower().lstrip(".")
@@ -406,6 +428,8 @@ def _validate_file_type(
         "pdf": head.startswith(b"%PDF-"),
         "docx": head.startswith(b"PK\x03\x04")
         and _is_docx(path, max_uncompressed_bytes=max_uncompressed_bytes),
+        "xlsx": head.startswith(b"PK\x03\x04")
+        and _is_xlsx(path, max_uncompressed_bytes=max_uncompressed_bytes),
         "txt": b"\x00" not in head,
         "md": b"\x00" not in head,
     }[suffix]
@@ -429,6 +453,27 @@ def _is_docx(path: Path, *, max_uncompressed_bytes: int) -> bool:
                 and sum(item.file_size for item in entries) <= max_uncompressed_bytes
                 and "[Content_Types].xml" in names
                 and "word/document.xml" in names
+            )
+    except (BadZipFile, OSError):
+        return False
+
+
+def _is_xlsx(path: Path, *, max_uncompressed_bytes: int) -> bool:
+    try:
+        with ZipFile(path) as archive:
+            entries = archive.infolist()
+            names = frozenset(item.filename for item in entries)
+            safe_names = all(
+                not item.filename.startswith(("/", "\\"))
+                and ".." not in PurePosixPath(item.filename.replace("\\", "/")).parts
+                for item in entries
+            )
+            return (
+                len(entries) <= 10_000
+                and safe_names
+                and sum(item.file_size for item in entries) <= max_uncompressed_bytes
+                and "[Content_Types].xml" in names
+                and "xl/workbook.xml" in names
             )
     except (BadZipFile, OSError):
         return False

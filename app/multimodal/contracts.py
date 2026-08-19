@@ -10,7 +10,7 @@ from urllib.parse import unquote, urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 AUDIO_FORMATS = frozenset({"mp3", "wav", "m4a", "webm"})
-DOCUMENT_FORMATS = frozenset({"txt", "md", "docx", "pdf"})
+DOCUMENT_FORMATS = frozenset({"txt", "md", "docx", "pdf", "xlsx"})
 IMAGE_FORMATS = frozenset({"png", "jpg", "jpeg", "webp"})
 FILE_FORMATS = DOCUMENT_FORMATS | IMAGE_FORMATS
 MAX_ATTACHMENTS_PER_MESSAGE = 5
@@ -90,6 +90,38 @@ class InputAudioContentPart(BaseModel):
     input_audio: InputAudioReference
 
 
+class ImageUrlReference(BaseModel):
+    """兼容 OpenAI ``image_url``，以及清小搭可能额外附带的展示字段。"""
+
+    model_config = ConfigDict(extra="ignore", str_strip_whitespace=True)
+
+    url: str
+    filename: str | None = None
+
+    @field_validator("url")
+    @classmethod
+    def public_http_url(cls, value: str) -> str:
+        return _validate_public_http_url(value)
+
+    @field_validator("filename")
+    @classmethod
+    def safe_image_filename(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        filename = _safe_filename(value)
+        suffix = PurePosixPath(filename).suffix.lower().lstrip(".")
+        if suffix not in IMAGE_FORMATS:
+            raise ValueError("图片 filename 仅支持 png、jpg、jpeg 或 webp")
+        return filename
+
+
+class ImageUrlContentPart(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    type: Literal["image_url"]
+    image_url: ImageUrlReference
+
+
 class FileReference(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
@@ -120,17 +152,23 @@ class FileContentPart(BaseModel):
 
 
 type ContentPart = Annotated[
-    TextContentPart | InputAudioContentPart | FileContentPart,
+    TextContentPart | InputAudioContentPart | ImageUrlContentPart | FileContentPart,
     Field(discriminator="type"),
 ]
 type ContentPartList = Annotated[list[ContentPart], Field(min_length=1, max_length=12)]
 type ChatContent = Annotated[str, Field(min_length=1, max_length=20_000)] | ContentPartList
 
 
-def attachment_parts(content: ChatContent) -> list[InputAudioContentPart | FileContentPart]:
+def attachment_parts(
+    content: ChatContent,
+) -> list[InputAudioContentPart | ImageUrlContentPart | FileContentPart]:
     if isinstance(content, str):
         return []
-    return [part for part in content if isinstance(part, (InputAudioContentPart, FileContentPart))]
+    return [
+        part
+        for part in content
+        if isinstance(part, (InputAudioContentPart, ImageUrlContentPart, FileContentPart))
+    ]
 
 
 def text_from_content(content: ChatContent) -> str:

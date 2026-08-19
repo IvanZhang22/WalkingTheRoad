@@ -34,6 +34,19 @@ def test_accepts_audio_image_and_document_url_contracts() -> None:
     assert len(audio.messages) == len(image.messages) == len(document.messages) == 1
 
 
+def test_accepts_openai_image_url_contract() -> None:
+    image = request_with(
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": "https://files.example.org/field-note.png?signature=private",
+                "detail": "high",
+            },
+        }
+    )
+    assert len(image.messages) == 1
+
+
 @pytest.mark.parametrize(
     "url",
     [

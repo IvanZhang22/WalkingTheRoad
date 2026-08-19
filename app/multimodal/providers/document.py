@@ -6,6 +6,7 @@ import asyncio
 from pathlib import PurePosixPath
 
 from docx import Document
+from openpyxl import load_workbook  # type: ignore[import-untyped]
 from pypdf import PdfReader
 
 from app.multimodal.errors import MaterialIngestError
@@ -28,6 +29,8 @@ class LocalDocumentParser(DocumentParser):
                 return self._parse_text(source)
             if suffix == ".docx":
                 return self._parse_docx(source)
+            if suffix == ".xlsx":
+                return self._parse_xlsx(source)
             if suffix == ".pdf":
                 return self._parse_pdf(source)
         except MaterialIngestError:
@@ -76,6 +79,36 @@ class LocalDocumentParser(DocumentParser):
         return ProviderResult(
             provider_name="local",
             provider_model="docx-parser-v1",
+            normalized_text=normalized,
+            segments=_block_segments(normalized),
+        )
+
+    def _parse_xlsx(self, source: DownloadedFile) -> ProviderResult:
+        """将表格转为带工作表、行号的可引用文本，而不是让模型猜测表格结构。"""
+
+        workbook = load_workbook(filename=source.path, read_only=True, data_only=True)
+        blocks: list[str] = []
+        try:
+            for worksheet in workbook.worksheets[:20]:
+                rows: list[str] = []
+                for row_number, values in enumerate(worksheet.iter_rows(values_only=True), start=1):
+                    rendered = [str(value).strip() for value in values if value is not None and str(value).strip()]
+                    if rendered:
+                        rows.append(f"第 {row_number} 行：" + " | ".join(rendered))
+                    if row_number >= 10_000:
+                        raise MaterialIngestError(
+                            "XDW-XLSX-ROWS", "单个工作表超过 10000 行，请拆分后再上传。"
+                        )
+                if rows:
+                    blocks.append(f"[工作表：{worksheet.title}]\n" + "\n".join(rows))
+        finally:
+            workbook.close()
+
+        normalized = _normalize_text("\n\n".join(blocks))
+        self._validate_text(normalized)
+        return ProviderResult(
+            provider_name="local",
+            provider_model="xlsx-parser-v1",
             normalized_text=normalized,
             segments=_block_segments(normalized),
         )
