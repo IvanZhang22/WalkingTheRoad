@@ -155,6 +155,7 @@ def create_app(
             database_path=_conversation_database_path(),
             workflow_service=app.state.workflow_service,
             material_ingestor=app.state.material_ingestor,
+            intent_router=IntentRouter(active_llm) if active_llm is not None else None,
         )
         if app.state.workflow_service is not None
         else None

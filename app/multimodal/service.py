@@ -496,4 +496,11 @@ def format_material_summary(materials: list[Material]) -> str:
             f"- `{material.material_id}`｜{material.filename}｜{material.modality.value}"
             f"｜{material.status.value}｜片段 {len(material.segments)}"
         )
+        if material.status is MaterialStatus.failed:
+            for issue in material.issues[:2]:
+                lines.append(f"  - 处理原因：{issue.message}")
+            if material.modality is MaterialModality.audio:
+                lines.append("  - 建议：先使用 mp3/wav、缩短或分段音频；若仍超时，请提供逐字稿。")
+        elif material.status is MaterialStatus.manual_review:
+            lines.append("  - 提醒：识别结果已生成，但需人工核对时间戳/原文后才能作为正式证据。")
     return "\n".join(lines)

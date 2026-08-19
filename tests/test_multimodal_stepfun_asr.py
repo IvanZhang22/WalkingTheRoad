@@ -146,29 +146,46 @@ async def test_safe_upstream_failures_do_not_expose_body(
     assert "signature" not in caught.value.public_message
 
 
-async def test_failed_task_and_missing_timestamps_fail_closed(tmp_path: Path) -> None:
-    for query_payload, expected_code in [
-        ({"status": "FAILED", "message": "secret"}, "XDW-ASR-UPSTREAM-FAILED"),
-        ({"result": [{"text": "只有整段文本"}]}, "XDW-ASR-TIMESTAMPS-MISSING"),
-    ]:
+async def test_failed_task_fails_closed(tmp_path: Path) -> None:
+    query_payload = {"status": "FAILED", "message": "secret"}
+    expected_code = "XDW-ASR-UPSTREAM-FAILED"
 
-        def handler(
-            request: httpx.Request, result: dict[str, object] = query_payload
-        ) -> httpx.Response:
-            if request.url.path.endswith("/submit"):
-                return httpx.Response(200, json={"task_id": "task-1"})
-            return httpx.Response(200, json=result)
+    def handler(
+        request: httpx.Request, result: dict[str, object] = query_payload
+    ) -> httpx.Response:
+        if request.url.path.endswith("/submit"):
+            return httpx.Response(200, json={"task_id": "task-1"})
+        return httpx.Response(200, json=result)
 
-        provider = StepFunASRProvider(
-            api_key="test",
-            transport=httpx.MockTransport(handler),
-            poll_interval=0,
-            sleep=no_sleep,
-        )
-        with pytest.raises(MaterialIngestError) as caught:
-            await provider.transcribe(source(tmp_path))
-        assert caught.value.code == expected_code
-        assert "secret" not in caught.value.public_message
+    provider = StepFunASRProvider(
+        api_key="test",
+        transport=httpx.MockTransport(handler),
+        poll_interval=0,
+        sleep=no_sleep,
+    )
+    with pytest.raises(MaterialIngestError) as caught:
+        await provider.transcribe(source(tmp_path))
+    assert caught.value.code == expected_code
+    assert "secret" not in caught.value.public_message
+
+
+async def test_full_transcript_without_timestamps_is_manual_review(tmp_path: Path) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/submit"):
+            return httpx.Response(200, json={"task_id": "task-1"})
+        return httpx.Response(200, json={"result": [{"text": "只有整段文本"}]})
+
+    provider = StepFunASRProvider(
+        api_key="test",
+        transport=httpx.MockTransport(handler),
+        poll_interval=0,
+        sleep=no_sleep,
+    )
+    result = await provider.transcribe(source(tmp_path))
+    assert result.normalized_text == "只有整段文本"
+    assert len(result.segments) == 1
+    assert result.segments[0].locator.start_ms is None
+    assert result.warnings
 
 
 async def test_downloaded_file_never_serializes_source_url(tmp_path: Path) -> None:

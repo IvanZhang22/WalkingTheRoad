@@ -19,6 +19,7 @@ from uuid import uuid4
 from app.models import RunStatus
 from app.multimodal.contracts import FileContentPart, ImageUrlContentPart, InputAudioContentPart
 from app.multimodal.models import Material
+from app.routing import IntentRouter
 
 MAIN_MENU = """你好，我是行小道，你的社会实践与社会科学调研智能助手。
 
@@ -386,10 +387,12 @@ class QingxiaodaConversation:
         database_path: Path,
         workflow_service: WorkflowRunner,
         material_ingestor: MaterialIngestor | None,
+        intent_router: IntentRouter | None = None,
     ) -> None:
         self.store = ConversationStore(database_path)
         self.workflow_service = workflow_service
         self.material_ingestor = material_ingestor
+        self.intent_router = intent_router
 
     async def reply(
         self,
@@ -585,6 +588,21 @@ class QingxiaodaConversation:
         selection = self._selection(message)
         if selection is None and attachments:
             selection = "w3"
+        # The formal conversation path should understand ordinary language,
+        # not only the four menu numbers or a small keyword dictionary.  Keep
+        # the deterministic heuristics below as a safe fallback if the model
+        # is unavailable or returns an uncertain/low-confidence result.
+        if selection is None and not attachments and self.intent_router is not None:
+            try:
+                routed = await self.intent_router.route(message)
+                if routed.recommended_workflow in WORKFLOW_TITLES and routed.confidence in {
+                    "high",
+                    "medium",
+                }:
+                    return self._start_workflow(state, routed.recommended_workflow)
+            except Exception:
+                # Routing must never make the conversation unavailable.
+                pass
         if selection is None:
             candidates = self._candidate_workflows(message)
             if len(candidates) == 1:

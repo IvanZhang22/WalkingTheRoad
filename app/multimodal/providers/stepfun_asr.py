@@ -192,10 +192,28 @@ class StepFunASRProvider(ASRProvider):
                 if segment is not None:
                     segments.append(segment)
 
+        if not segments and full_texts:
+            # Some successful StepFun responses contain a full transcript but
+            # omit utterance timestamps. Preserve the transcript as a manual
+            # review segment instead of turning a usable transcription into a
+            # generic failure. The evidence gate will keep it out of automatic
+            # citation analysis because its locator is empty.
+            segments = [
+                ProviderSegment(text="\n".join(full_texts), locator=MaterialLocator())
+            ]
+            return ProviderResult(
+                provider_name="stepfun",
+                provider_model=self.model,
+                normalized_text="\n".join(full_texts),
+                segments=segments,
+                warnings=[
+                    "阶跃 ASR 未返回分句时间戳；已保留整段转写，但必须人工核对后才能作为正式证据。"
+                ],
+            )
         if not segments:
             raise MaterialIngestError(
                 "XDW-ASR-TIMESTAMPS-MISSING",
-                "阶跃 ASR 没有返回分句时间戳，结果不能进入证据分析。",
+                "阶跃 ASR 没有返回可定位的转写片段。",
             )
         return ProviderResult(
             provider_name="stepfun",
