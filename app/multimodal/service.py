@@ -7,10 +7,12 @@ import hashlib
 from pathlib import PurePosixPath
 from urllib.parse import unquote, urlsplit, urlunsplit
 
+from app.multimodal.audio_relay import TemporaryAudioRelay
 from app.multimodal.contracts import (
     AUDIO_FORMATS,
     IMAGE_FORMATS,
     FileContentPart,
+    ImageUrlContentPart,
     InputAudioContentPart,
 )
 from app.multimodal.downloader import (
@@ -38,7 +40,7 @@ from app.multimodal.providers.mock import MockASRProvider, MockDocumentParser, M
 from app.multimodal.providers.stepfun_asr import StepFunASRProvider
 from app.multimodal.providers.unavailable import UnavailableASRProvider, UnavailableOCRProvider
 
-AttachmentPart = InputAudioContentPart | FileContentPart
+AttachmentPart = InputAudioContentPart | ImageUrlContentPart | FileContentPart
 
 
 class MaterialIngestService:
@@ -52,6 +54,7 @@ class MaterialIngestService:
         confidence_threshold: float = 0.8,
         enabled_modalities: frozenset[MaterialModality] | None = None,
         max_upload_bytes: int = 20 * 1024 * 1024,
+        audio_relay: TemporaryAudioRelay | None = None,
     ) -> None:
         if not 0 <= confidence_threshold <= 1:
             raise ValueError("confidence_threshold 必须位于 0 到 1 之间")
@@ -61,6 +64,7 @@ class MaterialIngestService:
         self.document_parser = document_parser
         self.confidence_threshold = confidence_threshold
         self.max_upload_bytes = max_upload_bytes
+        self.audio_relay = audio_relay
         self.enabled_modalities = (
             frozenset(MaterialModality) if enabled_modalities is None else enabled_modalities
         )
@@ -83,6 +87,7 @@ class MaterialIngestService:
         fingerprint = hashlib.sha256(data).hexdigest()
         material_id = f"MAT_{fingerprint[:12].upper()}"
         downloaded = None
+        audio_lease = None
         try:
             if modality not in self.enabled_modalities:
                 raise MaterialIngestError(
@@ -94,7 +99,15 @@ class MaterialIngestService:
                 data,
                 max_bytes=self.max_upload_bytes,
             )
-            result = await self._call_provider(downloaded, modality)
+            source_for_provider = downloaded
+            if modality is MaterialModality.audio and isinstance(self.asr, StepFunASRProvider):
+                if self.audio_relay is None:
+                    raise MaterialIngestError(
+                        "XDW-ASR-RELAY-NOT-CONFIGURED",
+                        "音频中转服务尚未配置，暂不能将该附件交给转写服务。",
+                    )
+                source_for_provider, audio_lease = await self.audio_relay.publish(downloaded)
+            result = await self._call_provider(source_for_provider, modality)
             return self._normalize_result(
                 material_id=material_id,
                 fingerprint=fingerprint,
@@ -116,6 +129,8 @@ class MaterialIngestService:
                 retryable=False,
             )
         finally:
+            if self.audio_relay is not None:
+                await self.audio_relay.revoke(audio_lease)
             if downloaded is not None:
                 downloaded.path.unlink(missing_ok=True)
         return Material(
@@ -131,6 +146,7 @@ class MaterialIngestService:
         material_id, fingerprint = _material_identity(attachment)
         filename, modality = _attachment_identity(attachment)
         downloaded = None
+        audio_lease = None
         try:
             if modality not in self.enabled_modalities:
                 raise MaterialIngestError(
@@ -156,7 +172,15 @@ class MaterialIngestService:
                     result=result,
                 )
             downloaded = await self.downloader.download(attachment)
-            result = await self._call_provider(downloaded, modality)
+            source_for_provider = downloaded
+            if modality is MaterialModality.audio and isinstance(self.asr, StepFunASRProvider):
+                if self.audio_relay is None:
+                    raise MaterialIngestError(
+                        "XDW-ASR-RELAY-NOT-CONFIGURED",
+                        "音频中转服务尚未配置，暂不能将该附件交给转写服务。",
+                    )
+                source_for_provider, audio_lease = await self.audio_relay.publish(downloaded)
+            result = await self._call_provider(source_for_provider, modality)
             return self._normalize_result(
                 material_id=material_id,
                 fingerprint=fingerprint,
@@ -178,6 +202,8 @@ class MaterialIngestService:
                 retryable=False,
             )
         finally:
+            if self.audio_relay is not None:
+                await self.audio_relay.revoke(audio_lease)
             if downloaded is not None:
                 downloaded.path.unlink(missing_ok=True)
         return Material(
@@ -294,6 +320,11 @@ def _attachment_identity(attachment: AttachmentPart) -> tuple[str, MaterialModal
     if isinstance(attachment, InputAudioContentPart):
         filename = PurePosixPath(unquote(urlsplit(attachment.input_audio.url).path)).name
         return filename or f"audio.{attachment.input_audio.format}", MaterialModality.audio
+    if isinstance(attachment, ImageUrlContentPart):
+        filename = attachment.image_url.filename or PurePosixPath(
+            unquote(urlsplit(attachment.image_url.url).path)
+        ).name
+        return filename or "image.png", MaterialModality.image
     filename = attachment.file.filename
     suffix = PurePosixPath(filename).suffix.lower().lstrip(".")
     modality = MaterialModality.image if suffix in IMAGE_FORMATS else MaterialModality.document
@@ -304,6 +335,11 @@ def _material_identity(attachment: AttachmentPart) -> tuple[str, str]:
     if isinstance(attachment, InputAudioContentPart):
         source = (
             f"audio\0{_stable_url(attachment.input_audio.url)}\0{attachment.input_audio.format}"
+        )
+    elif isinstance(attachment, ImageUrlContentPart):
+        source = (
+            f"image\0{_stable_url(attachment.image_url.url)}\0"
+            f"{attachment.image_url.filename or ''}"
         )
     else:
         source = f"file\0{_stable_url(attachment.file.url)}\0{attachment.file.filename}"
@@ -391,6 +427,7 @@ def build_live_ingest_service(
     baidu_ocr_endpoint_path: str = "/rest/2.0/ocr/v1/pp_ocrv5",
     baidu_ocr_timeout: float = 60,
     baidu_ocr_max_pages: int = 20,
+    audio_relay: TemporaryAudioRelay | None = None,
 ) -> MaterialIngestService:
     """按显式环境变量启用真实 Provider；未配置能力继续失败关闭。"""
 
@@ -442,6 +479,7 @@ def build_live_ingest_service(
         document_parser=LocalDocumentParser(max_document_chars=max_document_chars),
         enabled_modalities=frozenset(enabled_modalities),
         max_upload_bytes=max_upload_bytes,
+        audio_relay=audio_relay,
     )
 
 

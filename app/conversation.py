@@ -17,7 +17,7 @@ from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from app.models import RunStatus
-from app.multimodal.contracts import FileContentPart, InputAudioContentPart
+from app.multimodal.contracts import FileContentPart, ImageUrlContentPart, InputAudioContentPart
 from app.multimodal.models import Material
 
 MAIN_MENU = """你好，我是行小道，你的社会实践与社会科学调研智能助手。
@@ -57,7 +57,7 @@ class WorkflowRunner(Protocol):
 
 class MaterialIngestor(Protocol):
     async def ingest(
-        self, attachments: list[InputAudioContentPart | FileContentPart]
+        self, attachments: list[InputAudioContentPart | ImageUrlContentPart | FileContentPart]
     ) -> list[Material]: ...
 
 
@@ -396,7 +396,7 @@ class QingxiaodaConversation:
         *,
         session_id: str | None,
         text: str,
-        attachments: list[InputAudioContentPart | FileContentPart],
+        attachments: list[InputAudioContentPart | ImageUrlContentPart | FileContentPart],
     ) -> str:
         # 清小搭正式聊天会提供 sessionId。无 sessionId 的普通协议调用仍可
         # 获得菜单，但不会把状态误共享给其他调用者。
@@ -580,7 +580,7 @@ class QingxiaodaConversation:
         self,
         state: ConversationState,
         message: str,
-        attachments: list[InputAudioContentPart | FileContentPart],
+        attachments: list[InputAudioContentPart | ImageUrlContentPart | FileContentPart],
     ) -> str:
         selection = self._selection(message)
         if selection is None and attachments:
@@ -794,7 +794,7 @@ class QingxiaodaConversation:
         self,
         state: ConversationState,
         message: str,
-        attachments: list[InputAudioContentPart | FileContentPart],
+        attachments: list[InputAudioContentPart | ImageUrlContentPart | FileContentPart],
     ) -> str:
         workflow_id = state.workflow_id
         assert workflow_id is not None
@@ -915,7 +915,7 @@ class QingxiaodaConversation:
     async def _receive_attachments(
         self,
         state: ConversationState,
-        attachments: list[InputAudioContentPart | FileContentPart],
+        attachments: list[InputAudioContentPart | ImageUrlContentPart | FileContentPart],
     ) -> str:
         if self.material_ingestor is None:
             return self._failure_reply(

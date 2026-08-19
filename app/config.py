@@ -74,6 +74,9 @@ class Settings:
     baidu_ocr_endpoint_path: str = "/rest/2.0/ocr/v1/pp_ocrv5"
     baidu_ocr_timeout_seconds: int = 60
     baidu_ocr_max_pages: int = 20
+    asr_relay_public_base_url: str = ""
+    asr_relay_ttl_seconds: int = 600
+    asr_relay_ffmpeg_path: str = "ffmpeg"
     blob_read_write_token: str = ""
     blob_cleanup_enabled: bool = True
 
@@ -104,6 +107,10 @@ class Settings:
     @property
     def baidu_ocr_key_configured(self) -> bool:
         return bool(self.baidu_ocr_api_key.strip() and self.baidu_ocr_secret_key.strip())
+
+    @property
+    def asr_relay_configured(self) -> bool:
+        return self.asr_relay_public_base_url.startswith("https://")
 
     @property
     def blob_upload_configured(self) -> bool:
@@ -220,6 +227,9 @@ def get_settings() -> Settings:
         ),
         baidu_ocr_timeout_seconds=_positive_int("BAIDU_OCR_TIMEOUT_SECONDS", 60),
         baidu_ocr_max_pages=_positive_int("BAIDU_OCR_MAX_PAGES", 20),
+        asr_relay_public_base_url=os.getenv("ASR_RELAY_PUBLIC_BASE_URL", "").rstrip("/"),
+        asr_relay_ttl_seconds=_positive_int("ASR_RELAY_TTL_SECONDS", 600),
+        asr_relay_ffmpeg_path=os.getenv("ASR_RELAY_FFMPEG_PATH", "ffmpeg").strip() or "ffmpeg",
         blob_read_write_token=os.getenv("BLOB_READ_WRITE_TOKEN", ""),
         blob_cleanup_enabled=_boolean("BLOB_CLEANUP_ENABLED", True),
     )
