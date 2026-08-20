@@ -16,7 +16,8 @@ from threading import RLock
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
-from app.models import RunStatus
+from app.dialogue import OpenDialogueResponder
+from app.models import IntentRouteResult, RunStatus
 from app.multimodal.contracts import FileContentPart, ImageUrlContentPart, InputAudioContentPart
 from app.multimodal.models import Material
 from app.routing import IntentRouter
@@ -388,11 +389,13 @@ class QingxiaodaConversation:
         workflow_service: WorkflowRunner,
         material_ingestor: MaterialIngestor | None,
         intent_router: IntentRouter | None = None,
+        dialogue_responder: OpenDialogueResponder | None = None,
     ) -> None:
         self.store = ConversationStore(database_path)
         self.workflow_service = workflow_service
         self.material_ingestor = material_ingestor
         self.intent_router = intent_router
+        self.dialogue_responder = dialogue_responder
 
     async def reply(
         self,
@@ -428,6 +431,21 @@ class QingxiaodaConversation:
         if safety_reply:
             return safety_reply
 
+        # Natural-language recommendations are intentionally optional.  If the
+        # user accepts the latest one, make its “1” unambiguous instead of
+        # treating it as the global W1 menu choice.
+        pending_workflow = str(state.project_values().get("pending_workflow", ""))
+        if (
+            state.workflow_id is None
+            and pending_workflow in WORKFLOW_TITLES
+            and self._accept_pending_workflow(message)
+        ):
+            project = state.project_values()
+            project.pop("pending_workflow", None)
+            return self._start_workflow(
+                ConversationState(safe_session_id, fields={}, project=project), pending_workflow
+            )
+
         # An explicit natural-language request is always stronger than an old
         # menu.  The transition writes a new interaction state, invalidating
         # the previous numeric menu before the next user turn.
@@ -444,6 +462,8 @@ class QingxiaodaConversation:
 
         if state.workflow_id is None:
             return await self._choose_workflow(state, message, attachments)
+        if not attachments and self._looks_like_open_question(message):
+            return await self._answer_in_workflow_context(state, message)
         return await self._continue_workflow(state, message, attachments)
 
     @staticmethod
@@ -462,6 +482,8 @@ class QingxiaodaConversation:
         """Recognise only clear task switches; never infer facts from it."""
 
         text = message.lower()
+        if not any(action in text for action in ("进入", "开始", "切换", "使用", "打开")):
+            return None
         if any(token in text for token in ("改访谈", "修改访谈", "访谈提纲", "访谈问题", "设计访谈")):
             return "w2"
         if any(token in text for token in ("分析材料", "分析访谈", "主题分析", "编码", "提炼主题", "田野笔记")):
@@ -579,6 +601,68 @@ class QingxiaodaConversation:
         view["__active_project_id"] = project_id
         return view
 
+    @staticmethod
+    def _accept_pending_workflow(message: str) -> bool:
+        normalized = message.strip().lower()
+        return normalized in {
+            "1", "开始", "进入", "继续", "好", "好的", "可以", "开始吧",
+            "进入工作流", "开始整理", "帮我生成",
+        }
+
+    @staticmethod
+    def _looks_like_open_question(message: str) -> bool:
+        text = message.strip()
+        if len(text) > 120:
+            return False
+        # During a structured form, a sentence containing “如何” may itself
+        # be the research question the user is supplying.  Only intercept an
+        # unmistakable help/question turn, so normal field collection wins.
+        return text.startswith((
+            "为什么", "怎么", "能不能", "可以", "是否可以", "你能", "什么意思", "请问",
+        ))
+
+    async def _open_dialogue_reply(
+        self,
+        state: ConversationState,
+        message: str,
+        route: IntentRouteResult | None,
+    ) -> str:
+        project = state.project_values()
+        recommended = ""
+        if (
+            route is not None
+            and route.recommended_workflow in WORKFLOW_TITLES
+            and route.confidence in {"high", "medium"}
+        ):
+            recommended = str(route.recommended_workflow)
+            project["pending_workflow"] = recommended
+        else:
+            project.pop("pending_workflow", None)
+        self.store.save(ConversationState(state.session_id, fields={}, project=project))
+
+        if self.dialogue_responder is not None:
+            answer = await self.dialogue_responder.respond(message=message, route=route)
+        else:
+            answer = "我先根据你的情况给出建议；如需进一步整理，也可以继续补充。"
+        if not recommended:
+            return answer + "\n\n如果你愿意，可以继续补充你的实践场景、已有材料或最想解决的问题。"
+        title = WORKFLOW_TITLES[recommended]
+        return (
+            answer
+            + f"\n\n如果你希望把这件事整理成一套可执行的{title}，回复 **1** 即可；"
+            "也可以继续直接和我讨论。"
+        )
+
+    async def _answer_in_workflow_context(self, state: ConversationState, message: str) -> str:
+        if self.dialogue_responder is None:
+            return "可以继续说明你的困惑；当前表单不会因为这次提问而提交或改写。"
+        answer = await self.dialogue_responder.respond(
+            message=message,
+            route=None,
+            active_workflow=state.workflow_id,
+        )
+        return answer + "\n\n当前流程仍保留在原步骤；要继续填写，直接发送该步骤所需信息即可。"
+
     async def _choose_workflow(
         self,
         state: ConversationState,
@@ -588,27 +672,18 @@ class QingxiaodaConversation:
         selection = self._selection(message)
         if selection is None and attachments:
             selection = "w3"
-        # The formal conversation path should understand ordinary language,
-        # not only the four menu numbers or a small keyword dictionary.  Keep
-        # the deterministic heuristics below as a safe fallback if the model
-        # is unavailable or returns an uncertain/low-confidence result.
+        # A free-text description should lead to a useful answer first.  A
+        # workflow remains an opt-in next step; it is not a forced form.
         if selection is None and not attachments and self.intent_router is not None:
             try:
                 routed = await self.intent_router.route(message)
-                if routed.recommended_workflow in WORKFLOW_TITLES and routed.confidence in {
-                    "high",
-                    "medium",
-                }:
-                    return self._start_workflow(state, routed.recommended_workflow)
+                return await self._open_dialogue_reply(state, message, routed)
             except Exception:
-                # Routing must never make the conversation unavailable.
+                # The model must never make the conversation unavailable.
                 pass
         if selection is None:
             candidates = self._candidate_workflows(message)
-            if len(candidates) == 1:
-                guessed = candidates[0]
-                return self._start_workflow(state, guessed)
-            if len(candidates) == 2:
+            if False and len(candidates) == 2:  # legacy deterministic fallback; keep dialogue first
                 first, second = candidates
                 return (
                     "我还需要确认一件事：你现在是准备收集材料，还是已经有材料需要处理？\n\n"
@@ -616,8 +691,7 @@ class QingxiaodaConversation:
                     f"- 如果已有逐字稿、录音或田野笔记，我可以先做{WORKFLOW_TITLES[second]}。\n\n"
                     "直接说说你手头已有的材料即可。"
                 )
-            self.store.save(ConversationState(state.session_id, fields={}, project=state.project_values()))
-            return self._menu_for(state.project_values())
+            return await self._open_dialogue_reply(state, message, None)
         started = self._start_workflow(state, selection)
         if attachments:
             return (

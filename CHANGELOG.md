@@ -1,5 +1,17 @@
 # Changelog
 
+## [3.2.0] - 2026-08-20
+
+### Added
+
+- Natural-dialogue layer for Qingxiaoda: answer free-text questions before offering an optional workflow.
+- An explicit “reply 1 to continue” handoff, so a recommended workflow is never forced on the user.
+
+### Changed
+
+- Free-text task descriptions no longer auto-enter W1–W4; numeric choices, explicit “enter/start” commands, and attachments still do.
+- Questions asked during a workflow can receive a short explanation without silently advancing or overwriting the current form step.
+
 ## [3.1.3] - 2026-08-19
 
 ### Fixed

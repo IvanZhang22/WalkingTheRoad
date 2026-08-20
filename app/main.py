@@ -22,6 +22,7 @@ from app.blob_upload import (
 )
 from app.config import PROJECT_ROOT, Settings, get_settings
 from app.conversation import QingxiaodaConversation
+from app.dialogue import OpenDialogueResponder
 from app.llm import LLMClient, LLMError, MockLLMClient, OpenAICompatibleClient
 from app.models import IntentRouteRequest, IntentRouteResult, ProjectContext
 from app.multimodal.audio_relay import TemporaryAudioRelay
@@ -89,7 +90,7 @@ def create_app(
     app = FastAPI(
         default_response_class=Utf8JSONResponse,
         title="行小道本地 Agent",
-        version="3.1.3",
+        version="3.2.0",
         description="四工作流全代码版：OpenAI 兼容协议、项目卡串联与协作发布基线",
     )
     app.state.settings = active_settings
@@ -156,6 +157,7 @@ def create_app(
             workflow_service=app.state.workflow_service,
             material_ingestor=app.state.material_ingestor,
             intent_router=IntentRouter(active_llm) if active_llm is not None else None,
+            dialogue_responder=(OpenDialogueResponder(active_llm) if active_llm is not None else None),
         )
         if app.state.workflow_service is not None
         else None
@@ -196,7 +198,7 @@ def create_app(
     async def health() -> dict[str, Any]:
         return {
             "status": "ok" if app.state.llm is not None else "configuration_required",
-            "version": "3.1.3",
+            "version": "3.2.0",
             "app_mode": active_settings.app_mode,
             "provider": active_settings.provider,
             "model": active_settings.model,
@@ -427,7 +429,7 @@ def create_app(
 
     @app.get("/api/project")
     async def project_info() -> dict[str, str]:
-        return {"project_root": str(PROJECT_ROOT), "version": "3.1.3"}
+        return {"project_root": str(PROJECT_ROOT), "version": "3.2.0"}
 
     return app
 

@@ -40,14 +40,27 @@ def test_current_menu_owns_two_consecutive_numeric_answers() -> None:
         assert "研究问题" in _chat(client, session_id, "1")
 
 
-def test_natural_language_overrides_a_pending_menu() -> None:
+def test_natural_language_replaces_a_pending_recommendation() -> None:
     with TestClient(create_app(settings=settings(), llm=MockLLMClient())) as client:
         session_id = "v311-natural-override"
         assert "访谈" in _chat(client, session_id, "帮我设计访谈提纲")
         # The previous screen is interview mode, but the explicit new intent wins.
         reply = _chat(client, session_id, "不分析访谈了，我想先分析已有材料")
         assert "材料分析" in reply
-        assert "研究问题" in reply
+        assert "回复 **1**" in reply
+
+
+def test_natural_language_answers_before_optional_workflow_handoff() -> None:
+    with TestClient(create_app(settings=settings(), llm=MockLLMClient())) as client:
+        session_id = "v320-natural-handoff"
+        reply = _chat(client, session_id, "帮我设计一份给支教学生的访谈提纲")
+        assert "访谈" in reply
+        assert "回复 **1**" in reply
+        assert client.app.state.conversation.store.get(session_id).workflow_id is None
+
+        started = _chat(client, session_id, "1")
+        assert "访谈" in started
+        assert client.app.state.conversation.store.get(session_id).workflow_id == "w2"
 
 
 def test_project_context_conflict_requires_researcher_confirmation() -> None:

@@ -162,6 +162,8 @@ class MockLLMClient:
         del system_prompt, temperature, json_model
         if node_id == "3L-0-1":
             return IntentRouteMock.json(user_prompt)
+        if node_id == "3A-0-1":
+            return OpenDialogueMock.reply(user_prompt)
         if node_id == "3L-1-1":
             return ResearchDiagnosisMock.json()
         if node_id == "3L-3-1":
@@ -171,6 +173,35 @@ class MockLLMClient:
         if node_id in {"3L-1-3", "3L-2-3", "3L-3-3", "3L-4-3"}:
             return ProjectWritebackMock.json(node_id)
         return f"# {node_id} 模拟结果\n\n该结果仅用于自动测试，不是正式研究建议。"
+
+
+class OpenDialogueMock:
+    @staticmethod
+    def reply(user_prompt: str) -> str:
+        if "可选后续工作流：研究设计助手" in user_prompt:
+            return (
+                "可以先把实践选题拆成对象、场景、关键现象和希望理解的变化，"
+                "再判断哪些内容能通过访谈或观察获得材料。\n\n"
+                "你目前最关心的是哪一类参与者的经历？"
+            )
+        if "可选后续工作流：访谈设计助手" in user_prompt:
+            return (
+                "建议先从受访者的具体经历切入，再追问其判断、困难和变化，"
+                "这样比直接询问抽象态度更容易获得可分析的材料。\n\n"
+                "这次准备访谈哪一类人？"
+            )
+        if "可选后续工作流：质性材料分析" in user_prompt:
+            return (
+                "可以先按材料来源编号保存原话，再做初始编码和主题归类；"
+                "每个主题都应能回到具体片段核对。\n\n"
+                "你现有的是逐字稿、观察笔记，还是两者都有？"
+            )
+        if "可选后续工作流：研究质量质检" in user_prompt:
+            return (
+                "先逐条检查结论是否能对应到具体材料，并留意反例、样本边界和表述是否过强。\n\n"
+                "你最想核查的那条结论是什么？"
+            )
+        return "可以。先告诉我你已有的材料或最想解决的实践研究问题，我会和你一起把它理清。"
 
 
 class ResearchDiagnosisMock:
@@ -195,7 +226,7 @@ class IntentRouteMock:
         text = user_prompt.lower()
         rules: list[tuple[str, tuple[str, ...]]] = [
             ("w4", ("质检", "审查结论", "证据是否", "是否可靠", "报告审查", "夸大")),
-            ("w3", ("访谈记录", "观察笔记", "质性材料", "材料分析", "开放编码", "主题分析")),
+            ("w3", ("访谈记录", "观察笔记", "质性材料", "材料分析", "已有材料", "原始材料", "文本材料", "开放编码", "主题分析")),
             ("w2", ("访谈提纲", "访谈问题", "问题审查", "诱导性问题", "设计问题")),
             ("w1", ("研究设计", "调研方案", "研究问题", "研究对象", "研究方法", "选题")),
         ]
