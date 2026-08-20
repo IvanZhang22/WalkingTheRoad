@@ -10,6 +10,7 @@ from pydantic import BaseModel, ValidationError
 from app.config import Settings
 from app.document_parser import parse_document
 from app.evidence import load_json, verify_audit_evidence, verify_material_evidence
+from app.knowledge import MethodologyKnowledgeBase
 from app.llm import LLMClient
 from app.models import (
     AuditExtraction,
@@ -275,11 +276,26 @@ class WorkflowService:
         llm: LLMClient,
         settings: Settings,
         material_ingestor: MaterialIngestService | None = None,
+        knowledge_base: MethodologyKnowledgeBase | None = None,
     ) -> None:
         self.store = store
         self.llm = llm
         self.settings = settings
         self.material_ingestor = material_ingestor
+        self.knowledge_base = knowledge_base
+
+    def _system_with_knowledge(self, system_prompt: str, workflow: str, query: object) -> str:
+        if self.knowledge_base is None:
+            return system_prompt
+        reference = self.knowledge_base.prompt_context(
+            json.dumps(query, ensure_ascii=False, default=str), workflow
+        )
+        return (
+            f"{system_prompt}\n\n"
+            "以下是内部候选方法依据，仅约束建议与风险提醒：不得当作用户材料、"
+            "不得称为已审核规范或已核验文献。\n"
+            f"<methodology_reference>\n{reference}\n</methodology_reference>"
+        )
 
     async def analyze_materials(self, materials: list[Material], research_question: str) -> str:
         """从统一多模态材料直接执行 W3，并返回最终报告。"""
@@ -704,7 +720,7 @@ class WorkflowService:
             run_id,
             "3L-1-1",
             "大模型-研究设计诊断-1",
-            W1_DIAGNOSIS_SYSTEM,
+            self._system_with_knowledge(W1_DIAGNOSIS_SYSTEM, "w1", raw),
             diagnosis_user,
             0.1,
             ResearchDiagnosis,
@@ -714,7 +730,7 @@ class WorkflowService:
             run_id,
             "3L-1-2",
             "大模型-研究方案生成-2",
-            W1_PLAN_SYSTEM,
+            self._system_with_knowledge(W1_PLAN_SYSTEM, "w1", raw),
             plan_user,
             0.2,
         )
@@ -748,7 +764,7 @@ class WorkflowService:
                 run_id,
                 "3L-2-1",
                 "大模型-提纲生成-1",
-                W2_GENERATE_SYSTEM,
+                self._system_with_knowledge(W2_GENERATE_SYSTEM, "w2", raw),
                 w2_generate_user(raw),
                 0.2,
             )
@@ -759,7 +775,7 @@ class WorkflowService:
             run_id,
             "3L-2-2",
             "大模型-风险审查-2",
-            W2_REVIEW_SYSTEM,
+            self._system_with_knowledge(W2_REVIEW_SYSTEM, "w2", raw),
             w2_review_user(raw, draft),
             0.1,
         )
@@ -1025,7 +1041,7 @@ class WorkflowService:
             run_id,
             "3L-4-2",
             "大模型-研究质量审计-2",
-            W4_AUDIT_SYSTEM,
+            self._system_with_knowledge(W4_AUDIT_SYSTEM, "w4", raw),
             w4_audit_user(raw, verified, rejected),
             0.1,
         )

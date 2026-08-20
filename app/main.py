@@ -23,6 +23,7 @@ from app.blob_upload import (
 from app.config import PROJECT_ROOT, Settings, get_settings
 from app.conversation import QingxiaodaConversation
 from app.dialogue import OpenDialogueResponder
+from app.knowledge import MethodologyKnowledgeBase
 from app.llm import LLMClient, LLMError, MockLLMClient, OpenAICompatibleClient
 from app.models import IntentRouteRequest, IntentRouteResult, ProjectContext
 from app.multimodal.audio_relay import TemporaryAudioRelay
@@ -71,6 +72,12 @@ def _conversation_database_path() -> Path:
     return PROJECT_ROOT / "data" / "qingxiaoda_conversations.sqlite3"
 
 
+def _methodology_knowledge_path() -> Path:
+    # Keep curated, versioned reference data separate from the writable runtime root.
+    # Tests intentionally replace PROJECT_ROOT with a temporary directory.
+    return Path(__file__).resolve().parent.parent / "data" / "methodology_knowledge"
+
+
 def create_app(
     *,
     settings: Settings | None = None,
@@ -90,13 +97,14 @@ def create_app(
     app = FastAPI(
         default_response_class=Utf8JSONResponse,
         title="行小道本地 Agent",
-        version="3.2.1",
+        version="3.3.0",
         description="四工作流全代码版：OpenAI 兼容协议、项目卡串联与协作发布基线",
     )
     app.state.settings = active_settings
     app.state.store = store
     app.state.llm = active_llm
     app.state.llm_error = llm_error
+    app.state.knowledge_base = MethodologyKnowledgeBase.from_directory(_methodology_knowledge_path())
     audio_relay = (
         TemporaryAudioRelay(
             public_base_url=active_settings.asr_relay_public_base_url,
@@ -147,6 +155,7 @@ def create_app(
             active_llm,
             active_settings,
             material_ingestor=app.state.material_ingestor,
+            knowledge_base=app.state.knowledge_base,
         )
         if active_llm is not None
         else None
@@ -157,7 +166,11 @@ def create_app(
             workflow_service=app.state.workflow_service,
             material_ingestor=app.state.material_ingestor,
             intent_router=IntentRouter(active_llm) if active_llm is not None else None,
-            dialogue_responder=(OpenDialogueResponder(active_llm) if active_llm is not None else None),
+            dialogue_responder=(
+                OpenDialogueResponder(active_llm, app.state.knowledge_base)
+                if active_llm is not None
+                else None
+            ),
         )
         if app.state.workflow_service is not None
         else None
@@ -198,7 +211,7 @@ def create_app(
     async def health() -> dict[str, Any]:
         return {
             "status": "ok" if app.state.llm is not None else "configuration_required",
-            "version": "3.2.1",
+            "version": "3.3.0",
             "app_mode": active_settings.app_mode,
             "provider": active_settings.provider,
             "model": active_settings.model,
@@ -214,8 +227,13 @@ def create_app(
             "ocr_key_configured": active_settings.baidu_ocr_key_configured,
             "large_upload_configured": active_settings.blob_upload_configured,
             "max_upload_mb": active_settings.max_upload_bytes // 1024 // 1024,
+            "knowledge_base": app.state.knowledge_base.status(),
             "configuration_error": app.state.llm_error,
         }
+
+    @app.get("/api/knowledge/status")
+    async def knowledge_status() -> dict[str, object]:
+        return app.state.knowledge_base.status()
 
     @app.get("/api/internal/asr-audio/{token}", include_in_schema=False)
     async def relay_audio(token: str) -> FileResponse:
@@ -429,7 +447,7 @@ def create_app(
 
     @app.get("/api/project")
     async def project_info() -> dict[str, str]:
-        return {"project_root": str(PROJECT_ROOT), "version": "3.2.1"}
+        return {"project_root": str(PROJECT_ROOT), "version": "3.3.0"}
 
     return app
 

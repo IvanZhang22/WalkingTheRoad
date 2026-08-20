@@ -20,6 +20,10 @@ htmlcov/
 private/
 local-data/
 data/
+!data/
+data/*
+!data/methodology_knowledge/
+!data/methodology_knowledge/**
 uploads/
 .DS_Store
 Thumbs.db

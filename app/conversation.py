@@ -414,6 +414,14 @@ class QingxiaodaConversation:
         if project_command is not None:
             return project_command
 
+        if message in {"查看依据", "方法依据", "查看方法依据"}:
+            project = state.project_values()
+            query = str(project.get("last_knowledge_query", "")).strip()
+            workflow = str(project.get("last_knowledge_workflow", "")).strip() or None
+            if not query or self.dialogue_responder is None:
+                return "我还没有可对应的上一条方法建议。请先说说你想解决的研究问题。"
+            return self.dialogue_responder.sources(query, workflow)
+
         if self._is_project_home(message):
             menu_state = ConversationState(
                 safe_session_id, fields={}, project=state.project_values()
@@ -638,6 +646,8 @@ class QingxiaodaConversation:
             project["pending_workflow"] = recommended
         else:
             project.pop("pending_workflow", None)
+        project["last_knowledge_query"] = message[:4000]
+        project["last_knowledge_workflow"] = recommended
         self.store.save(ConversationState(state.session_id, fields={}, project=project))
 
         if self.dialogue_responder is not None:
