@@ -645,12 +645,12 @@ class QingxiaodaConversation:
         else:
             answer = "我先根据你的情况给出建议；如需进一步整理，也可以继续补充。"
         if not recommended:
-            return answer + "\n\n如果你愿意，可以继续补充你的实践场景、已有材料或最想解决的问题。"
+            return answer + "\n\n## 二、下一步\n\n继续补充你的实践场景、已有材料或最想解决的问题即可。"
         title = WORKFLOW_TITLES[recommended]
         return (
             answer
-            + f"\n\n如果你希望把这件事整理成一套可执行的{title}，回复 **1** 即可；"
-            "也可以继续直接和我讨论。"
+            + f"\n\n## 二、可选下一步\n\n1、回复 **1**，将这件事整理成可执行的{title}。\n"
+            "2、继续直接和我讨论，不会自动进入表单。"
         )
 
     async def _answer_in_workflow_context(self, state: ConversationState, message: str) -> str:
@@ -661,7 +661,7 @@ class QingxiaodaConversation:
             route=None,
             active_workflow=state.workflow_id,
         )
-        return answer + "\n\n当前流程仍保留在原步骤；要继续填写，直接发送该步骤所需信息即可。"
+        return answer + "\n\n## 二、当前流程\n\n当前步骤仍保留；要继续填写，直接发送该步骤所需信息即可。"
 
     async def _choose_workflow(
         self,

@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.1] - 2026-08-20
+
+### Changed
+
+- Standardized user-facing answers and W1–W4 reports on basic Markdown headings: `一、二、` for primary sections and `1、2、` for secondary sections.
+- Kept menus, tables, citations, and Mermaid source compatible with Qingxiaoda's chat renderer.
+
 ## [3.2.0] - 2026-08-20
 
 ### Added
