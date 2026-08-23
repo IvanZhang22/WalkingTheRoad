@@ -56,7 +56,7 @@ def test_natural_language_answers_before_optional_workflow_handoff() -> None:
         reply = _chat(client, session_id, "帮我设计一份给支教学生的访谈提纲")
         assert "访谈" in reply
         assert "## 一、" in reply
-        assert "## 二、" in reply
+        assert "## 下一步可以做什么？" in reply
         assert "回复 **1**" in reply
         assert client.app.state.conversation.store.get(session_id).workflow_id is None
 

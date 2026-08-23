@@ -40,6 +40,8 @@ class AudioJob:
     first_preview: str
     processed_preview: str
     transcript: str
+    analysis_result: str
+    analysis_error: str
     error: str
     created_at: str
 
@@ -56,7 +58,9 @@ class AudioJobStore:
                     source_url TEXT NOT NULL, source_format TEXT NOT NULL, raw_path TEXT NOT NULL,
                     status TEXT NOT NULL, segment_count INTEGER NOT NULL DEFAULT 0,
                     completed_count INTEGER NOT NULL DEFAULT 0, failed_count INTEGER NOT NULL DEFAULT 0,
-                    first_preview TEXT NOT NULL DEFAULT '', transcript TEXT NOT NULL DEFAULT '',
+                    first_preview TEXT NOT NULL DEFAULT '', processed_preview TEXT NOT NULL DEFAULT '',
+                    transcript TEXT NOT NULL DEFAULT '', analysis_result TEXT NOT NULL DEFAULT '',
+                    analysis_error TEXT NOT NULL DEFAULT '',
                     error TEXT NOT NULL DEFAULT '', review_confirmed INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL, updated_at TEXT NOT NULL
                 );
@@ -72,6 +76,14 @@ class AudioJobStore:
                 self._connection.execute(
                     "ALTER TABLE audio_jobs ADD COLUMN processed_preview TEXT NOT NULL DEFAULT ''"
                 )
+            if "analysis_result" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE audio_jobs ADD COLUMN analysis_result TEXT NOT NULL DEFAULT ''"
+                )
+            if "analysis_error" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE audio_jobs ADD COLUMN analysis_error TEXT NOT NULL DEFAULT ''"
+                )
 
     def create(
         self, session_id: str, attachment: InputAudioContentPart, raw_path: Path
@@ -80,8 +92,8 @@ class AudioJobStore:
         now = _now()
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT INTO audio_jobs(job_id,session_id,filename,source_url,source_format,raw_path,status,segment_count,completed_count,failed_count,first_preview,processed_preview,transcript,error,review_confirmed,created_at,updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, 0, 0, '', '', '', '', 0, ?, ?)",
+                "INSERT INTO audio_jobs(job_id,session_id,filename,source_url,source_format,raw_path,status,segment_count,completed_count,failed_count,first_preview,processed_preview,transcript,analysis_result,analysis_error,error,review_confirmed,created_at,updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, 0, 0, '', '', '', '', '', '', 0, ?, ?)",
                 (
                     job_id,
                     session_id,
@@ -98,7 +110,7 @@ class AudioJobStore:
     def get(self, job_id: str) -> AudioJob | None:
         with self._lock:
             row = self._connection.execute(
-                "SELECT job_id,session_id,filename,status,segment_count,completed_count,failed_count,first_preview,processed_preview,transcript,error,created_at FROM audio_jobs WHERE job_id=?",
+                "SELECT job_id,session_id,filename,status,segment_count,completed_count,failed_count,first_preview,processed_preview,transcript,analysis_result,analysis_error,error,created_at FROM audio_jobs WHERE job_id=?",
                 (job_id,),
             ).fetchone()
         return AudioJob(*row) if row else None
@@ -153,6 +165,13 @@ class AudioJobStore:
                 (job_id,),
             ).fetchall()
         return "\n\n".join(str(row[0]).strip() for row in rows if str(row[0]).strip())
+
+    def completed_count(self, job_id: str) -> int:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT COUNT(*) FROM audio_segments WHERE job_id=? AND status='succeeded'", (job_id,)
+            ).fetchone()
+        return int(row[0]) if row else 0
 
     def failure_summary(self, job_id: str) -> str:
         with self._lock:
@@ -251,7 +270,7 @@ class AudioJobService:
             )
             text = self.store.completed_text(job_id)
             failures = len(self.store.pending_segments(job_id))
-            completed = len(text and [x for x in text.split("\n\n") if x] or [])
+            completed = self.store.completed_count(job_id)
             if failures:
                 self.store.update(
                     job_id,

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 from dataclasses import dataclass
@@ -26,12 +27,14 @@ from app.routing import IntentRouter
 
 MAIN_MENU = """你好，我是行小道，你的社会实践与社会科学调研智能助手。
 
-我可以陪你完成研究设计、访谈设计、材料分析、证据质检与补访建议。直接用自己的话说出你现在遇到的问题就可以；如果你愿意，也可选择：
+我有四项主要能力：研究设计、访谈设计、材料分析、结论质量质检。直接用自己的话说出你现在遇到的问题就可以；如果你愿意，也可选择：
 
 1. 研究设计：把一个想法变成研究方案
 2. 访谈设计：设计或检查访谈
 3. 材料分析：整理已有访谈或田野材料
 4. 结论质检：检查研究结论是否站得住
+
+我会在当前会话中保存你的项目卡和已确认的信息。只要不新建会话，你可以持续管理同一个项目：它可以顺次经历这四个环节，也可以随时进入任一环节补充材料、修改研究问题，或随着信息变多重新理解项目背景、目的与研究设计。
 
 行小道不会虚构访谈、编造数据或原始引文，也不会把有限质性样本包装成总体结论。AI 的建议需要由你结合原始材料和导师意见确认。
 
@@ -457,6 +460,7 @@ class QingxiaodaConversation:
         # Wired by create_app.  Optional keeps unit tests and non-audio modes simple.
         self.audio_jobs: AudioJobService | None = None
         self.audio_downloader: SafeDownloader | None = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
 
     async def reply(
         self,
@@ -481,11 +485,13 @@ class QingxiaodaConversation:
         ):
             return (
                 "可以。音频上传后会进入后台转写；我会保留原始转写，并提供首段的整理版供抽样核对。\n\n"
-                "## 二、下一步可以做什么？\n\n" + self._start_workflow(state, "w3")
+                "## 下一步可以做什么？\n\n" + self._start_workflow(state, "w3")
             )
 
         if state.step == "audio_job":
             return await self._handle_audio_job(state, message)
+        if state.step == "audio_analysis":
+            return await self._handle_audio_analysis(state, message)
 
         project_command = self._handle_project_command(state, message)
         if project_command is not None:
@@ -775,12 +781,14 @@ class QingxiaodaConversation:
         if not recommended:
             return (
                 answer
-                + "\n\n## 二、下一步可以做什么？\n\n继续补充你的实践场景、已有材料或最想解决的问题即可。"
+                + "\n\n## 下一步可以做什么？\n\n你也可以选择：\n"
+                "1、进入研究设计\n2、进入访谈设计\n3、进入材料分析\n4、进入结论质检\n\n"
+                "当前会话会保留同一项目的已确认信息；你可随时补充背景、研究问题或材料后再调整方向。"
             )
         title = WORKFLOW_TITLES[recommended]
         return (
             answer
-            + f"\n\n## 二、下一步可以做什么？\n\n1、回复 **1**，将这件事整理成可执行的{title}。\n"
+            + f"\n\n## 下一步可以做什么？\n\n1、回复 **1**，将这件事整理成可执行的{title}。\n"
             "2、继续直接和我讨论，不会自动进入表单。"
         )
 
@@ -794,7 +802,7 @@ class QingxiaodaConversation:
         )
         return (
             answer
-            + "\n\n## 二、当前流程\n\n当前步骤仍保留；要继续填写，直接发送该步骤所需信息即可。"
+            + "\n\n## 当前流程\n\n当前步骤仍保留；要继续填写，直接发送该步骤所需信息即可。"
         )
 
     async def _choose_workflow(
@@ -1485,6 +1493,8 @@ class QingxiaodaConversation:
                     "2. 忽略低置信片段，仅用已通过门控的内容继续\n"
                     "3. 取消本次上传"
                 )
+            if fields.get("__audio_job_id"):
+                return self._start_audio_analysis(state)
             return await self._run_cached_material(state)
         if message == "2":
             self.store.save(
@@ -1501,6 +1511,136 @@ class QingxiaodaConversation:
             )
             return "已取消本次材料处理，尚未开始分析。你可再次确认授权后上传其他材料。"
         return "请回复 1（开始）、2（修改分类）或 3（取消）。"
+
+    def _start_audio_analysis(self, state: ConversationState) -> str:
+        """Start W3 after human sampling review without holding Qingxiaoda's request open."""
+        if self.audio_jobs is None:
+            return self._failure_reply(
+                "音频后台任务服务暂不可用。",
+                "已完成的转写和当前项目资料仍会保留。",
+                "请稍后重试，或把转写文本直接作为材料发送。",
+            )
+        fields = state.field_values()
+        job_id = str(fields.get("__audio_job_id", "")).strip()
+        job = self.audio_jobs.store.get(job_id)
+        if job is None:
+            return self._failure_reply(
+                "没有找到对应的音频任务。",
+                "尚未生成新的研究结论。",
+                "请重新上传音频或直接发送逐字稿。",
+            )
+        if job.status == "analysis_ready":
+            return "材料分析已经完成。请回复“查看分析进度”获取结果。"
+        if job.status == "analysing":
+            self.store.save(
+                ConversationState(state.session_id, state.workflow_id, "audio_analysis", fields, state.project_values())
+            )
+            return f"任务 {job_id} 仍在后台分析中。回复“查看分析进度”即可获取最新状态。"
+
+        self.audio_jobs.store.update(job_id, status="analysing", analysis_error="")
+        pending_state = ConversationState(
+            state.session_id, state.workflow_id, "audio_analysis", fields, state.project_values()
+        )
+        self.store.save(pending_state)
+        task = asyncio.create_task(self._run_audio_analysis_background(job_id, pending_state))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        return (
+            f"已开始后台材料分析（任务 {job_id}）。为避免清小搭的单次对话超时，"
+            "我不会让当前连接一直等待；分析会继续在服务器上完成。\n\n"
+            "## 下一步可以做什么？\n\n"
+            "1、稍后回复“查看分析进度”获取结果\n"
+            "2、回复“查看首段转写”再次核对音频样本\n"
+            "3、如需停止本次处理，回复“取消任务”"
+        )
+
+    async def _run_audio_analysis_background(self, job_id: str, state: ConversationState) -> None:
+        """Run evidence-sensitive W3 work out of the platform HTTP request path."""
+        if self.audio_jobs is None:
+            return
+        try:
+            fields = state.field_values()
+            workflow_id = state.workflow_id or "w3"
+            material_text = str(fields.get("__material_text", "")).strip()
+            if not material_text:
+                raise ValueError("没有可供分析的转写文本")
+            record = await self.workflow_service.store.create(workflow_id)
+            workflow_fields = {key: value for key, value in fields.items() if not key.startswith("__")}
+            await self.workflow_service.execute(
+                record.run_id,
+                workflow_id,
+                workflow_fields,
+                "qingxiaodao-audio-transcript.txt",
+                material_text.encode("utf-8"),
+                None,
+            )
+            completed = await self.workflow_service.store.get(record.run_id)
+            if completed is None or completed.status != RunStatus.succeeded:
+                self.audio_jobs.store.update(
+                    job_id,
+                    status="analysis_failed",
+                    analysis_error="材料分析未完成；可回复“重新开始分析”再试一次。",
+                )
+                return
+            self.audio_jobs.store.update(
+                job_id,
+                status="analysis_ready",
+                analysis_result=completed.final_markdown or "",
+                analysis_error="",
+            )
+        except Exception:
+            self.audio_jobs.store.update(
+                job_id,
+                status="analysis_failed",
+                analysis_error="材料分析未完成；可回复“重新开始分析”再试一次。",
+            )
+
+    async def _handle_audio_analysis(self, state: ConversationState, message: str) -> str:
+        if self.audio_jobs is None:
+            return "音频后台服务暂不可用，请稍后再试。"
+        fields = state.field_values()
+        job_id = str(fields.get("__audio_job_id", "")).strip()
+        job = self.audio_jobs.store.get(job_id)
+        if job is None:
+            return "没有找到本次音频分析任务。请重新上传音频或发送逐字稿。"
+        compact = message.replace(" ", "")
+        if any(token in compact for token in ("查看首段", "首段转写", "转写预览")):
+            return await self._handle_audio_job(
+                ConversationState(
+                    state.session_id, state.workflow_id, "audio_job", fields, state.project_values()
+                ),
+                message,
+            )
+        if any(token in compact for token in ("取消任务", "取消")):
+            self.audio_jobs.store.update(job_id, status="cancelled", error="研究者取消后台分析")
+            self.store.save(ConversationState(state.session_id, state.workflow_id, "upload", fields, state.project_values()))
+            return "已取消本次后台材料分析；此前的转写不会自动作为研究结论使用。"
+        if any(token in compact for token in ("重新开始分析", "重新分析", "重试")):
+            if job.status == "analysing":
+                return "任务仍在后台分析中。请稍后回复“查看分析进度”。"
+            return self._start_audio_analysis(state)
+        if job.status == "analysis_ready":
+            project = dict(state.project_values())
+            workflow_id = state.workflow_id or "w3"
+            statuses = dict(project.get("workflow_status", {}))
+            statuses[workflow_id] = "AI_GENERATED"
+            project["workflow_status"] = statuses
+            results = dict(project.get("results", {}))
+            results[workflow_id] = job.analysis_result
+            project["results"] = results
+            self.store.save(ConversationState(state.session_id, workflow_id, "result_review", fields, project))
+            return (
+                f"## {WORKFLOW_TITLES[workflow_id]}（待你确认）\n\n{job.analysis_result}\n\n"
+                "---\n这是一份 AI 生成的研究辅助结果，不会自动成为正式研究结论。\n\n"
+                "请先结合田野判断核对它。你可以直接说“确认采用”“我想修改……”或“重新运行”。\n\n"
+                "1、确认采用当前结果\n2、说明我想修改的部分\n3、重新运行当前步骤\n4、返回项目主页"
+            )
+        if job.status == "analysis_failed":
+            return f"后台材料分析没有完成。{job.analysis_error}\n\n回复“重新开始分析”重试，或回复“取消任务”结束本次处理。"
+        return (
+            f"任务 {job_id} 正在后台分析，当前连接无需持续等待。\n\n"
+            "请稍后回复“查看分析进度”；完成后，我会在这次会话中返回待确认的分析结果。"
+        )
 
     @staticmethod
     def _manual_review_prompt(fields: dict[str, Any]) -> str:
@@ -1539,6 +1679,8 @@ class QingxiaodaConversation:
                 "transcribing": "正在转写",
                 "awaiting_review": "等待首段抽样核对",
                 "analysing": "正在分析",
+                "analysis_ready": "分析完成，等待查看",
+                "analysis_failed": "分析未完成",
                 "succeeded": "已完成",
                 "failed": "有分段未完成",
                 "cancelled": "已取消",
