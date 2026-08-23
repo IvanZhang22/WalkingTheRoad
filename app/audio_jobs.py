@@ -146,6 +146,15 @@ class AudioJobStore:
             ).fetchall()
         return "\n\n".join(str(row[0]).strip() for row in rows if str(row[0]).strip())
 
+    def failure_summary(self, job_id: str) -> str:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT error FROM audio_segments WHERE job_id=? AND status='failed' AND error<>'' "
+                "ORDER BY segment_index LIMIT 1",
+                (job_id,),
+            ).fetchone()
+        return str(row[0])[:300] if row else "部分分段转写失败。"
+
     def cleanup(self, raw_hours: int, transcript_days: int) -> None:
         cutoff = datetime.now(UTC)
         with self._lock:
@@ -239,7 +248,7 @@ class AudioJobService:
                     status="failed",
                     failed_count=failures,
                     completed_count=completed,
-                    error="部分分段转写失败，可回复“继续处理”重试。",
+                    error=self.store.failure_summary(job_id),
                 )
             else:
                 self.store.update(
@@ -327,8 +336,9 @@ class AudioJobService:
                     )
                     return
                 except Exception as exc:
+                    safe_error = str(exc).replace("\n", " ")[:300] or type(exc).__name__
                     self.store.set_segment(
-                        job_id, index, status="failed", attempts=attempt, error=type(exc).__name__
+                        job_id, index, status="failed", attempts=attempt, error=safe_error
                     )
                     if attempt >= 2:
                         return

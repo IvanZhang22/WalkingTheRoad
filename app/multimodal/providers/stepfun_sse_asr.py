@@ -38,15 +38,28 @@ class StepFunSSEASRProvider(ASRProvider):
         if not self.api_key:
             raise MaterialIngestError("XDW-ASR-NOT-CONFIGURED", "音频转写服务尚未配置。")
         payload = base64.b64encode(source.path.read_bytes()).decode("ascii")
+        # Exact schema from StepFun SSE ASR: audio.data plus audio.input.
+        # ``model`` and ``enable_timestamp`` are deliberately nested under
+        # transcription; top-level variants are rejected by the API.
         body = {
-            "model": self.model,
             "audio": {
-                "format": (source.source_format or "mp3").lower(),
                 "data": payload,
-            },
-            "enable_timestamp": True,
+                "input": {
+                    "transcription": {
+                        "language": "zh",
+                        "model": self.model,
+                        "enable_itn": True,
+                        "enable_timestamp": True,
+                    },
+                    "format": {"type": (source.source_format or "mp3").lower()},
+                },
+            }
         }
-        headers = {"Authorization": f"Bearer {self.api_key}", "Accept": "text/event-stream"}
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+        }
         texts: list[str] = []
         segments: list[ProviderSegment] = []
         try:
@@ -76,6 +89,13 @@ class StepFunSSEASRProvider(ASRProvider):
                             event = json.loads(raw)
                         except json.JSONDecodeError:
                             continue
+                        if event.get("type") == "error":
+                            message = str(event.get("message") or "上游未说明原因")[:300]
+                            raise MaterialIngestError(
+                                "XDW-ASR-UPSTREAM-EVENT",
+                                f"音频转写服务报错：{message}",
+                                retryable=True,
+                            )
                         self._collect(event, texts, segments)
         except MaterialIngestError:
             raise
@@ -102,12 +122,29 @@ class StepFunSSEASRProvider(ASRProvider):
     def _collect(event: dict[str, Any], texts: list[str], segments: list[ProviderSegment]) -> None:
         # StepFun has used both direct fields and OpenAI-like delta wrappers.
         data: dict[str, Any] = event
+        if isinstance(event.get("delta"), str):
+            text = str(event["delta"]).strip()
+            if text:
+                texts.append(text)
+                start = event.get("start_time")
+                end = event.get("end_time")
+                if isinstance(start, (int, float)) and isinstance(end, (int, float)):
+                    segments.append(
+                        ProviderSegment(
+                            text=text,
+                            locator=MaterialLocator(
+                                start_ms=max(0, int(start)), end_ms=max(0, int(end))
+                            ),
+                        )
+                    )
+            return
         choices = event.get("choices")
         if isinstance(choices, list) and choices and isinstance(choices[0], dict):
             data = choices[0].get("delta") or choices[0].get("message") or choices[0]
             if not isinstance(data, dict):
                 return
-        text = data.get("text") or data.get("content") or data.get("transcript")
+        value: Any = data.get("text") or data.get("content") or data.get("transcript")
+        text = value if isinstance(value, str) else ""
         if isinstance(text, str) and text.strip():
             texts.append(text.strip())
         start = data.get("start_ms", data.get("start_time"))
