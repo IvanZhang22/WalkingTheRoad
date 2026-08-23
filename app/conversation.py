@@ -878,9 +878,15 @@ class QingxiaodaConversation:
                 fields["theme"] = project["research_topic"]
                 next_state = ConversationState(state.session_id, "w1", "purpose", fields, project)
                 prompt = f"好，我们继续完善研究设计。当前主题是“{project['research_topic']}”。\n\n你希望通过这项研究理解、解释或改进什么？"
+            elif self._has_existing_materials(project):
+                fields["__theme_candidates"] = self._theme_candidates(project)
+                next_state = ConversationState(
+                    state.session_id, "w1", "theme_candidates", fields, project
+                )
+                prompt = self._candidate_prompt("研究主题", fields["__theme_candidates"])
             else:
                 next_state = ConversationState(state.session_id, "w1", "theme", fields, project)
-                prompt = "好，我们先把想法收成可执行的研究设计。\n\n第一步：请用一句话描述你想研究的社会实践主题。"
+                prompt = "好，我们先把想法收成可执行的研究设计。\n\n第一步：请用一句话描述你想研究的社会实践主题（至少 5 个字）。"
         elif workflow_id == "w2":
             next_state = ConversationState(state.session_id, "w2", "mode", fields, project)
             prompt = "好，我们来处理访谈。你是想从零起草提纲，还是已经有一组问题希望我审查？\n\n1. 起草访谈提纲\n2. 审查已有问题"
@@ -904,6 +910,42 @@ class QingxiaodaConversation:
             next_state = ConversationState(state.session_id, "w4", step, fields, project)
         self.store.save(next_state)
         return prompt
+
+    @staticmethod
+    def _has_existing_materials(project: dict[str, Any]) -> bool:
+        return bool(project.get("uploaded_materials") or project.get("results", {}).get("w3"))
+
+    @staticmethod
+    def _theme_candidates(project: dict[str, Any]) -> list[str]:
+        materials = project.get("uploaded_materials", [])
+        label = "已上传的社会实践材料"
+        if materials and isinstance(materials[0], dict):
+            name = str(materials[0].get("name", "")).strip()
+            if name and len(name) < 60 and not name.lower().startswith("qingxiaodao-"):
+                label = f"“{Path(name).stem[:30]}”相关材料"
+        return [
+            f"社会实践参与者在{label}中呈现的实际经历、感受与困难",
+            f"{label}所反映的支持需求、资源条件与改进路径",
+            "社会实践项目运行中的参与过程、现实约束与可能改进",
+        ]
+
+    @staticmethod
+    def _purpose_candidates(theme: str) -> list[str]:
+        return [
+            f"理解“{theme}”中不同参与者的具体经历、感受和看法",
+            f"分析“{theme}”中困难或差异形成的条件，并识别可改进之处",
+            f"梳理“{theme}”中的实践过程、支持资源与潜在优化路径",
+        ]
+
+    @staticmethod
+    def _candidate_prompt(label: str, candidates: list[str]) -> str:
+        items = "\n".join(f"{index}、{item}" for index, item in enumerate(candidates, 1))
+        return (
+            f"我已参考当前项目已上传的材料，先给出 3 个{label}候选项。推荐先选 1；"
+            "之后仍可继续修订，不会覆盖原有材料或成果。\n\n"
+            f"{items}\n4、以上都不采用，我自己写或说明修改意见\n\n"
+            "回复编号即可；若暂时只回复很短的内容（如“不知道”），我会先采用推荐项，再请你后续校核。"
+        )
 
     def _resolve_menu_input(self, state: ConversationState, message: str) -> str:
         """Map a numeric or natural-language answer only inside its active menu.
@@ -1133,6 +1175,11 @@ class QingxiaodaConversation:
         if state.step == "manual_review":
             return await self._handle_manual_review(state, message)
 
+        if workflow_id == "w1" and state.step == "theme_candidates":
+            return self._choose_w1_candidate(state, message, "theme")
+        if workflow_id == "w1" and state.step == "purpose_candidates":
+            return self._choose_w1_candidate(state, message, "purpose")
+
         if workflow_id == "w2" and state.step == "mode":
             if message not in {"1", "2"}:
                 return "请回复 1（从零生成）或 2（审查已有问题）。"
@@ -1177,9 +1224,11 @@ class QingxiaodaConversation:
 
         if not message:
             return "请补充这一项信息；也可以回复“上一步”修改前一项。"
-        if message == "跳过" and state.step not in self._required_steps(workflow_id, fields):
+        if self._is_short_or_skip(message) and state.step not in self._required_steps(workflow_id, fields):
             message = ""
-        elif message == "跳过":
+        elif state.step in {"theme", "purpose"} and self._is_short_or_skip(message):
+            return "这一项是完成研究设计所必需的信息，请用至少 5 个字说明；若项目已有材料，可先从候选项中选择，再继续校核。"
+        elif message.strip() in {"跳过", "不知道", "不清楚", "没有", "暂无", "无"}:
             return "这一项是完成当前任务所必需的信息，请用自己的话补充。"
         conflict = self._context_conflict(project, state.step, message)
         if conflict is not None:
@@ -1199,6 +1248,51 @@ class QingxiaodaConversation:
             )
             return next_prompt
         return await self._run_without_attachments(state.session_id, workflow_id, fields, project)
+
+    @staticmethod
+    def _is_short_or_skip(message: str) -> bool:
+        compact = "".join(char for char in message.strip() if not char.isspace())
+        if len(compact) <= 5:
+            return True
+        return compact.lower() in {"跳过", "不知道", "不清楚", "没有", "暂无", "无"}
+
+    def _choose_w1_candidate(self, state: ConversationState, message: str, field: str) -> str:
+        fields = state.field_values()
+        project = state.project_values()
+        candidate_key = f"__{field}_candidates"
+        candidates = [str(item) for item in fields.get(candidate_key, []) if str(item).strip()]
+        if not candidates:
+            candidates = self._theme_candidates(project) if field == "theme" else self._purpose_candidates(str(fields.get("theme", "")))
+        choice = message.strip()
+        if choice in {"1", "2", "3"}:
+            value = candidates[int(choice) - 1]
+            note = ""
+        elif choice == "4":
+            next_state = "theme" if field == "theme" else "purpose"
+            self.store.save(ConversationState(state.session_id, "w1", next_state, fields, project))
+            label = "研究主题" if field == "theme" else "研究目的"
+            return f"好的，请自行填写{label}或说明你想怎样修改候选项（至少 5 个字）。"
+        elif self._is_short_or_skip(choice):
+            value = candidates[0]
+            note = "你暂未提供可用文本，我先采用推荐项；之后可随时补充或修改。\n\n"
+        elif len(choice) >= 5:
+            value = choice
+            note = "已记录你的自定义内容。\n\n"
+        else:
+            value = candidates[0]
+            note = "这条输入暂时不足以形成可靠的研究信息，我先采用推荐项；之后可随时补充或修改。\n\n"
+        fields[field] = value
+        if field == "theme":
+            purpose_candidates = self._purpose_candidates(value)
+            fields["__purpose_candidates"] = purpose_candidates
+            self.store.save(
+                ConversationState(state.session_id, "w1", "purpose_candidates", fields, project)
+            )
+            return note + self._candidate_prompt("研究目的", purpose_candidates)
+        next_step, next_prompt = self._next_step("w1", "purpose", fields)
+        assert next_step is not None
+        self.store.save(ConversationState(state.session_id, "w1", next_step, fields, project))
+        return note + next_prompt
 
     async def _receive_attachments(
         self,
@@ -1603,14 +1697,38 @@ class QingxiaodaConversation:
             return await self._handle_audio_analysis(pending_state, "查看分析进度")
         except TimeoutError:
             pass
+        material_text = str(fields.get("__material_text", ""))
+        remaining_seconds = self._estimate_audio_analysis_remaining_seconds(material_text, elapsed_seconds=30)
+        eta = self._format_eta_range(remaining_seconds)
         return (
             f"已开始后台材料分析（任务 {job_id}）。我已先处理约 30 秒；为避免清小搭单次对话超时，"
-            "后续分析会继续在服务器后台完成。\n\n"
+            f"后续分析会继续在服务器后台完成。根据当前材料体量，预计还需 {eta}。\n\n"
             "## 下一步可以做什么？\n\n"
             "1、稍后回复“查看分析进度”获取结果\n"
             "2、回复“查看首段转写”再次核对音频样本\n"
             "3、如需停止本次处理，回复“取消任务”"
         )
+
+    @staticmethod
+    def _estimate_audio_analysis_remaining_seconds(material_text: str, *, elapsed_seconds: int) -> int:
+        """Conservative estimate for the W3 multi-node analysis after a bounded wait.
+
+        It is intentionally a range estimate, not a promise: output time varies
+        with upstream model latency and evidence density.  The formula weights
+        input length because this is the one stable signal available before the
+        workflow finishes.
+        """
+        characters = len("".join(material_text.split()))
+        estimated_total = max(50, min(15 * 60, 45 + round(characters / 80)))
+        return max(10, estimated_total - elapsed_seconds)
+
+    @staticmethod
+    def _format_eta_range(remaining_seconds: int) -> str:
+        lower = max(1, round(remaining_seconds * 0.8))
+        upper = max(lower, round(remaining_seconds * 1.2))
+        if remaining_seconds <= 300:
+            return f"{lower}～{upper} 秒"
+        return f"{max(1, round(lower / 60))}～{max(1, round(upper / 60))} 分钟"
 
     async def _run_audio_analysis_background(self, job_id: str, state: ConversationState) -> None:
         """Run evidence-sensitive W3 work out of the platform HTTP request path."""
@@ -2078,19 +2196,19 @@ class QingxiaodaConversation:
             return None, ""
         prompts = {
             "purpose": "第二步：你希望通过这项研究理解、解释或改进什么？",
-            "background": "请补充已知背景或你的初步判断；没有可回复“跳过”。",
-            "deadline": "这项实践或研究的时间限制是什么？没有可回复“跳过”。",
-            "participants": "你目前可以接触哪些对象或场景？没有可回复“跳过”。",
-            "resources": "团队人数、可用资源或重要限制是什么？没有可回复“跳过”。",
+            "background": "请补充已知背景或你的初步判断；如果暂时没有，简短回复即可，系统会记录为待补充而不自行推断。",
+            "deadline": "这项实践或研究的时间限制是什么？如果暂时没有，简短回复即可，系统会记录为待补充。",
+            "participants": "你目前可以接触哪些对象或场景？如果暂时没有，简短回复即可，系统会记录为待补充。",
+            "resources": "团队人数、可用资源或重要限制是什么？如果暂时没有，简短回复即可，系统会记录为待补充。",
             "participant_profile": "计划访谈谁？请描述对象范围或筛选条件。",
             "duration": "每次访谈预计多长时间？",
-            "sensitive_topics": "有哪些敏感主题、伦理边界或访谈限制？没有可回复“跳过”。",
+            "sensitive_topics": "有哪些敏感主题、伦理边界或访谈限制？如果暂时没有，简短回复即可，系统会记录为待补充。",
             "existing_questions": "请直接粘贴需要审查的访谈问题。",
-            "review_participant": "这组问题准备问谁？没有可回复“跳过”。",
-            "review_requirements": "还有什么特殊要求？没有可回复“跳过”。",
+            "review_participant": "这组问题准备问谁？如果暂时没有，简短回复即可，系统会记录为待补充。",
+            "review_requirements": "还有什么特殊要求？如果暂时没有，简短回复即可，系统会记录为待补充。",
             "source_id": "请给这批材料取一个便于引用的名称或编号，例如“访谈材料包 A”。",
             "source_type": "这批材料属于哪一类？\n1. 单份访谈（一个受访者的一份记录）\n2. 多份访谈\n3. 田野或观察笔记\n4. 混合材料\n\n回复编号，或直接说材料类型都可以。",
-            "source_context": "请补充采集场景、对象范围、日期或材料限制；没有可回复“跳过”。",
+            "source_context": "请补充采集场景、对象范围、日期或材料限制；如果暂时没有，简短回复即可，系统会记录为待补充。",
             "candidate_claim": "请写出需要核验的一条结论或判断。",
             "target_population": "这条结论原本想讨论的目标群体是谁？",
             "sample_summary": "实际样本是什么情况？请写人数、来源和关键特征；未知信息请明确写“未知”。",

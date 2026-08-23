@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xingxiaodao-agent"
-version = "3.4.2"
+version = "3.4.4"
 description = "琛屽皬閬擄細闈㈠悜澶у鐢熺ぞ浼氬疄璺电殑绀剧鐮旂┒杈呭姪 Agent"
 requires-python = ">=3.12"
 dependencies = [
