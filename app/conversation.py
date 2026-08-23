@@ -25,20 +25,20 @@ from app.multimodal.downloader import SafeDownloader
 from app.multimodal.models import Material
 from app.routing import IntentRouter
 
-MAIN_MENU = """你好，我是行小道，你的社会实践与社会科学调研智能助手。
+MAIN_MENU = """你好，我是行小道，陪你把社会实践一步步做成可靠研究的协作助手。
 
-我有四项主要能力：研究设计、访谈设计、材料分析、结论质量质检。直接用自己的话说出你现在遇到的问题就可以；如果你愿意，也可选择：
+你不必一开始就把问题说得很专业。告诉我你在做什么、卡在哪里，或直接选择一个入口：
 
-1. 研究设计：把一个想法变成研究方案
-2. 访谈设计：设计或检查访谈
-3. 材料分析：整理已有访谈或田野材料
-4. 结论质检：检查研究结论是否站得住
+1、研究设计：把实践想法收成可研究的问题和方案
+2、访谈设计：从零起草提纲，或检查已有问题
+3、材料分析：处理访谈、观察、图片、文档或音频材料
+4、结论质检：检查结论、证据和样本边界是否站得住
 
-我会在当前会话中保存你的项目卡和已确认的信息。只要不新建会话，你可以持续管理同一个项目：它可以顺次经历这四个环节，也可以随时进入任一环节补充材料、修改研究问题，或随着信息变多重新理解项目背景、目的与研究设计。
+同一会话就是你的项目工作台：只要不新建会话，我会持续记住已确认的信息并维护项目卡。一个项目可以依次经过以上四步；也可以随时回到任一步补充材料、修订设计或重新校核研究问题。新信息会增量补充到项目中，不会静默覆盖你已经确认的内容。
 
 行小道不会虚构访谈、编造数据或原始引文，也不会把有限质性样本包装成总体结论。AI 的建议需要由你结合原始材料和导师意见确认。
 
-你随时可以说“回到项目主页”“上一步”“结束”“新建项目：项目名称”或“项目列表”。"""
+你随时可以说“项目主页”“上一步”“新建项目：项目名称”或“项目列表”。"""
 
 WORKFLOW_TITLES = {
     "w1": "研究设计",
@@ -302,7 +302,29 @@ class ConversationStore:
         for source, destination in field_map.items():
             value = str(fields.get(source, "")).strip()
             if value:
+                previous = str(project.get(destination, "")).strip()
+                if previous and previous != value:
+                    project.setdefault("context_history", []).append(
+                        {
+                            "field": destination,
+                            "value": previous,
+                            "replaced_at": cls._now(),
+                            "reason": "研究者在后续步骤中补充或修订",
+                        }
+                    )
                 project[destination] = value
+        topic = str(project.get("research_topic", "")).strip()
+        default_names = {"当前研究项目", "未命名研究项目", ""}
+        if topic and str(project.get("project_name", "")).strip() in default_names:
+            compact_topic = " ".join(topic.split())[:24].rstrip("。；，、")
+            project["project_name"] = f"{compact_topic}调研" if compact_topic else "未命名研究项目"
+            project["project_name_source"] = "根据研究主题自动生成，待研究者修改或确认"
+        purpose = str(fields.get("purpose", "")).strip()
+        if workflow_id == "w1" and topic and purpose and not project.get("research_question"):
+            project["research_question_candidate"] = (
+                f"在“{topic[:50]}”的实践情境中，{purpose.rstrip('。？')}？"
+            )
+            project["research_question_source"] = "根据研究主题与研究目的自动生成，待研究者校核"
         if workflow_id == "w1" and fields.get("purpose"):
             project["research_method"] = "社会实践研究设计（待研究者确认）"
         if workflow_id == "w2" and fields.get("mode"):
@@ -897,6 +919,7 @@ class QingxiaodaConversation:
         if message.strip().isdigit():
             return message if message in options else message
         lowered = message.lower()
+        compact = "".join(char for char in lowered if not char.isspace() and char not in "，。！？、；：,.!?;:")
         step = state.step
         natural: dict[str, tuple[tuple[str, ...], str]] = {
             "mode": (("从零", "起草", "生成", "新建", "设计"), "1"),
@@ -933,10 +956,15 @@ class QingxiaodaConversation:
             if any(token in lowered for token in ("主菜单", "项目主页", "返回")):
                 return "2"
         elif step == "material_confirm":
-            if any(token in lowered for token in ("修改", "分类", "用途说明")):
+            if any(token in compact for token in ("修改", "调整", "重分", "换成", "分类", "用途说明")):
                 return "2"
-            if any(token in lowered for token in ("取消", "不分析", "暂不")):
+            if any(token in compact for token in ("取消", "不分析", "暂不", "先不", "算了")):
                 return "3"
+            if any(
+                token in compact
+                for token in ("分类正确", "开始分析", "开始", "确认分析", "分析吧", "就这样", "没问题", "可以", "好的", "同意")
+            ):
+                return "1"
         elif step == "low_confidence":
             if any(token in lowered for token in ("只用", "忽略低置信", "高置信")):
                 return "2"
@@ -991,7 +1019,8 @@ class QingxiaodaConversation:
         return (
             f"你刚补充的{label}与当前项目已记录的信息不一致。\n\n"
             f"当前：{existing}\n新的：{value.strip()}\n\n"
-            "要用新的内容替换当前项目记录吗？\n1. 替换为新的内容\n2. 保留当前内容"
+            "要把新信息作为本项目的最新版本吗？旧版本会保留在项目修订记录中。\n"
+            "1. 采用新版本并保留旧记录\n2. 保留当前版本"
         )
 
     def _handle_context_conflict(self, state: ConversationState, message: str) -> str:
@@ -1005,8 +1034,18 @@ class QingxiaodaConversation:
             )
             return self._menu_for(project)
         if message == "1":
+            context_key = self._context_key_for_field(field)
+            if context_key:
+                project.setdefault("context_history", []).append(
+                    {
+                        "field": context_key,
+                        "value": str(project.get(context_key, "")).strip(),
+                        "replaced_at": ConversationStore._now(),
+                        "reason": "研究者确认采用新版本",
+                    }
+                )
             fields[field] = value
-            project["last_system_action"] = "已按研究者确认更新项目上下文"
+            project["last_system_action"] = "已按研究者确认增量更新项目上下文，旧版本已保留"
             return self._advance_after_context_resolution(state, fields, project, field)
         if message == "2":
             context_key = self._context_key_for_field(field)
@@ -1375,6 +1414,12 @@ class QingxiaodaConversation:
             known.append(f"研究主题：{project['research_topic']}")
         if project.get("research_question"):
             known.append(f"研究问题：{project['research_question']}")
+        elif project.get("research_question_candidate"):
+            known.append(
+                "待校核研究问题："
+                + str(project["research_question_candidate"])
+                + "（可在研究设计中继续修改）"
+            )
         if project.get("target_group"):
             known.append(f"研究对象：{project['target_group']}")
         summary = "\n".join(f"- {item}" for item in known) or "- 还没有记录核心研究信息"
@@ -1494,7 +1539,7 @@ class QingxiaodaConversation:
                     "3. 取消本次上传"
                 )
             if fields.get("__audio_job_id"):
-                return self._start_audio_analysis(state)
+                return await self._start_audio_analysis(state)
             return await self._run_cached_material(state)
         if message == "2":
             self.store.save(
@@ -1510,9 +1555,15 @@ class QingxiaodaConversation:
                 )
             )
             return "已取消本次材料处理，尚未开始分析。你可再次确认授权后上传其他材料。"
-        return "请回复 1（开始）、2（修改分类）或 3（取消）。"
+        return (
+            "我暂时无法把这句话可靠地对应到本步操作。你可以回复：\n"
+            "1、开始分析（也可说“分类正确”“就这样分析”）\n"
+            "2、修改材料类型或用途说明\n"
+            "3、取消本次上传\n\n"
+            "全局操作仍可使用：“项目主页”“上一步”“项目列表”“新建项目：名称”。"
+        )
 
-    def _start_audio_analysis(self, state: ConversationState) -> str:
+    async def _start_audio_analysis(self, state: ConversationState) -> str:
         """Start W3 after human sampling review without holding Qingxiaoda's request open."""
         if self.audio_jobs is None:
             return self._failure_reply(
@@ -1530,7 +1581,7 @@ class QingxiaodaConversation:
                 "请重新上传音频或直接发送逐字稿。",
             )
         if job.status == "analysis_ready":
-            return "材料分析已经完成。请回复“查看分析进度”获取结果。"
+            return await self._handle_audio_analysis(state, "查看分析进度")
         if job.status == "analysing":
             self.store.save(
                 ConversationState(state.session_id, state.workflow_id, "audio_analysis", fields, state.project_values())
@@ -1545,9 +1596,16 @@ class QingxiaodaConversation:
         task = asyncio.create_task(self._run_audio_analysis_background(job_id, pending_state))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+        # Qingxiaoda gives an OpenAI-compatible request a finite response window.
+        # Use its first 30 seconds for a genuine attempt; only then detach work.
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=30)
+            return await self._handle_audio_analysis(pending_state, "查看分析进度")
+        except TimeoutError:
+            pass
         return (
-            f"已开始后台材料分析（任务 {job_id}）。为避免清小搭的单次对话超时，"
-            "我不会让当前连接一直等待；分析会继续在服务器上完成。\n\n"
+            f"已开始后台材料分析（任务 {job_id}）。我已先处理约 30 秒；为避免清小搭单次对话超时，"
+            "后续分析会继续在服务器后台完成。\n\n"
             "## 下一步可以做什么？\n\n"
             "1、稍后回复“查看分析进度”获取结果\n"
             "2、回复“查看首段转写”再次核对音频样本\n"
@@ -1618,7 +1676,7 @@ class QingxiaodaConversation:
         if any(token in compact for token in ("重新开始分析", "重新分析", "重试")):
             if job.status == "analysing":
                 return "任务仍在后台分析中。请稍后回复“查看分析进度”。"
-            return self._start_audio_analysis(state)
+            return await self._start_audio_analysis(state)
         if job.status == "analysis_ready":
             project = dict(state.project_values())
             workflow_id = state.workflow_id or "w3"

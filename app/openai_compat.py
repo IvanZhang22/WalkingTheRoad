@@ -154,7 +154,7 @@ def format_route_reply(route: IntentRouteResult) -> str:
     response = f"我建议进入 **{workflow_name}**。\n\n判断依据：{route.reason}"
     if missing:
         response += f"\n\n开始前建议补充：{missing}。"
-    response += "\n\n当前为标准协议接入模式；下一步请按该工作流的表单引导补充研究信息。"
+    response += "\n\n你可以继续补充背景、研究对象或已有材料；同一会话中的项目记录会持续保留。"
     return response
 
 

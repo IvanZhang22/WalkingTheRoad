@@ -84,7 +84,7 @@ def test_project_context_conflict_requires_researcher_confirmation() -> None:
         )
         conflict = _chat(client, session_id, "返乡青年为什么选择自主创业？")
         assert "不一致" in conflict
-        assert "替换" in conflict
+        assert "采用新版本" in conflict
         follow_up = _chat(client, session_id, "保留当前内容")
         assert "计划访谈谁" in follow_up
         saved = conversation.store.get(session_id).project_values()
