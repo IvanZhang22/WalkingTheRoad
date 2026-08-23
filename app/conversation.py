@@ -471,6 +471,19 @@ class QingxiaodaConversation:
         state = self.store.get(safe_session_id)
         message = text.strip()
 
+        if (
+            not attachments
+            and state.workflow_id is None
+            and self.audio_jobs is not None
+            and self.audio_jobs.provider is not None
+            and "音频" in message
+            and any(token in message for token in ("上传", "录音", "语音", "分析"))
+        ):
+            return (
+                "可以。音频上传后会进入后台转写；我会保留原始转写，并提供首段的整理版供抽样核对。\n\n"
+                "## 二、下一步可以做什么？\n\n" + self._start_workflow(state, "w3")
+            )
+
         if state.step == "audio_job":
             return await self._handle_audio_job(state, message)
 
@@ -761,11 +774,13 @@ class QingxiaodaConversation:
             answer = "我先根据你的情况给出建议；如需进一步整理，也可以继续补充。"
         if not recommended:
             return (
-                answer + "\n\n## 二、下一步\n\n继续补充你的实践场景、已有材料或最想解决的问题即可。"
+                answer
+                + "\n\n## 二、下一步可以做什么？\n\n继续补充你的实践场景、已有材料或最想解决的问题即可。"
             )
         title = WORKFLOW_TITLES[recommended]
         return (
-            answer + f"\n\n## 二、可选下一步\n\n1、回复 **1**，将这件事整理成可执行的{title}。\n"
+            answer
+            + f"\n\n## 二、下一步可以做什么？\n\n1、回复 **1**，将这件事整理成可执行的{title}。\n"
             "2、继续直接和我讨论，不会自动进入表单。"
         )
 
@@ -1390,12 +1405,17 @@ class QingxiaodaConversation:
             "1. 我已确认，有权处理这些材料\n2. 先了解如何匿名化\n3. 取消上传"
         )
 
-    @staticmethod
-    def _upload_prompt() -> str:
+    def _upload_prompt(self) -> str:
+        audio_ready = self.audio_jobs is not None and self.audio_jobs.provider is not None
+        audio_text = (
+            "音频会进入后台转写，完成后可回复“查看进度”或“查看首段转写”；"
+            if audio_ready
+            else "音频需要在转写服务配置完成后才能进入证据分析；"
+        )
         return (
-            "请使用清小搭的“上传文件”发送原始材料。当前以平台实际能力为准："
-            "可先使用文本和常见文档；音频、图片或扫描件只有在相应转写/OCR 服务配置完成后才会进入证据分析。"
-            "较长材料建议分批上传。"
+            "请使用清小搭的“上传文件”发送原始材料。可上传文本、Word、PDF、表格、图片或扫描件；"
+            + audio_text
+            + "图片或扫描件会在 OCR 服务可用时提取文本。较长材料建议分批上传。"
         )
 
     def _handle_privacy_consent(self, state: ConversationState, message: str) -> str:
@@ -1534,9 +1554,13 @@ class QingxiaodaConversation:
                 return "首段转写尚未完成。请稍后回复“查看进度”。"
             if not job.first_preview:
                 return "目前没有可供核对的首段转写；如提示失败，请回复“继续处理”。"
+            processed = job.processed_preview or "（整理版生成中或暂不可用，请先以原始转写为准。）"
             return (
-                "以下是第一段音频的转写抽样预览（不是整段材料的人工复核）：\n\n"
-                f"--- 首段预览 ---\n{job.first_preview[:4000]}\n--- 预览结束 ---\n\n"
+                "以下仅用于第一段音频的抽样核对，不等同于整份材料的人工复核。\n\n"
+                "# 一、原始机器转写\n\n"
+                f"{job.first_preview[:4000]}\n\n"
+                "# 二、整理后的转写与内容提要\n\n"
+                f"{processed}\n\n"
                 "1、回复“确认首段”表示抽样未发现明显问题，继续整理材料\n"
                 "2、回复“继续处理”重试失败分段\n3、回复“取消任务”停止本次处理"
             )

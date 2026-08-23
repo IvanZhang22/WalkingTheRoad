@@ -1,232 +1,59 @@
-# 行小道本地 Agent v3.1.2（清小搭多模态附件兼容）
+# 行小道 Agent v3.4.2
 
-v3.1.2 在 v3.1.1 的项目上下文与自然交互基础上，兼容清小搭的 `image_url`/`file` 图片输入，并增加 xlsx 表格解析。阶跃文件 ASR 可通过本服务的短时 HTTPS 中转处理清小搭附件；m4a/webm 需要服务器已安装 ffmpeg。W1—W4 仍负责实际的研究设计、访谈设计、材料分析和证据质检；系统不会编造材料或自动确认研究结论。
+面向大学生社会实践的研究协作智能体。它支持研究设计、访谈设计、质性材料分析和研究质量核查，并以清小搭所需的 OpenAI 兼容接口对外提供服务。
 
-多模态能力通过唯一的 OpenAI 兼容入口接收文本、普通文档、音频、图片和扫描 PDF：安全下载后分别进入本地解析、阶跃/Deepgram ASR 或百度 OCR，再按片段置信度和定位门控执行 W3 证据提取、确定性引文核验和主题生成。视频不在本版范围内。
+## 一、当前能力
 
-PR #11 保留了面向 Vercel Preview 的 Blob 大文件直传实现；腾讯云正式部署不应配置该能力。正式上线前需要将这层替换为腾讯云 COS 的预签名上传，并完成音频、OCR 凭据与清小搭附件协议的真实验收。
+1、文本与常见文档：TXT、Markdown、Word、PDF、Excel。
 
-项目卡只保存在当前浏览器，不是数据库。上传文件正文、API Key 和完整节点轨迹不会进入项目卡。
+2、图片与扫描件：通过百度 OCR 提取文字；是否可在清小搭中使用以平台实测为准。
 
-## 一、最快启动方法
+3、音频：清小搭上传后进入后台任务，服务器将音频归一化为 16kHz 单声道、约 5 分钟分段，并通过 StepFun SSE 转写。用户可在对话中发送“查看进度”“查看首段转写”“继续处理”“取消任务”。原始音频默认保留 24 小时，任务文本和状态保留 30 天。
 
-1、双击 `启动行小道.bat`。
+4、研究边界：不会编造访谈、原始引文、数据或研究结论。音频首段核对只是抽样核对，不替代对整份材料的人工复核。
 
-2、首次运行会创建 `.venv`、安装依赖并生成 `.env`。
+## 二、服务接口
 
-3、在自动打开的 `.env` 中填写：
+- `GET /api/health`：服务、模型、OCR、ASR 队列状态。
+- `GET /v1/models`：OpenAI 兼容模型列表，Bearer 鉴权。
+- `POST /v1/chat/completions`：清小搭对话入口，支持流式输出与文本/附件消息。
+- `GET /api/audio-jobs/{job_id}`：受 Bearer 鉴权保护的音频后台任务状态。
+
+## 三、服务器部署
+
+腾讯云正式部署使用 Nginx + systemd：Nginx 对外提供 HTTPS，应用监听 `127.0.0.1:8000`，服务名为 `xingxiaodao.service`。
+
+每次部署均上传对应版本的 ZIP 和 `upgrade-vX.Y.Z.sh` 到 `/home/ubuntu/`，再执行：
+
+```bash
+sudo bash /home/ubuntu/upgrade-vX.Y.Z.sh
+```
+
+脚本会继承生产 `.env`、创建旧版本备份，并在健康检查失败时恢复旧版本。
+
+## 四、必要环境变量
 
 ```text
-MODEL_PROVIDER=openrouter
-OPENROUTER_API_KEY=你的OpenRouter_API_Key
-```
+MODEL_PROVIDER=stepfun
+MODEL_API_KEY=服务端模型密钥
+AGENT_API_KEY=清小搭接入密钥
 
-4、保存后回到命令窗口按回车。Chrome 会自动打开：
+ASR_PROVIDER=stepfun_sse
+STEPFUN_ASR_API_KEY=可留空；MODEL_PROVIDER=stepfun 时复用 MODEL_API_KEY
+STEPFUN_ASR_SSE_BASE_URL=https://api.stepfun.com/step_plan/v1
+STEPFUN_ASR_SSE_MODEL=stepaudio-2.5-asr
 
-```text
-http://127.0.0.1:8000
-```
-
-5、停止服务时，在命令窗口按 `Ctrl+C`。
-
-API Key 只能写在 `.env`，不要发到聊天、截图或提交到 GitHub。
-
-## 二、命令行启动方法
-
-在 PowerShell 中进入本目录：
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
-Copy-Item .env.example .env
-notepad .env
-python run_local.py
-```
-
-如果 PowerShell 不允许激活脚本，可以不激活，直接使用：
-
-```powershell
-.\.venv\Scripts\python.exe run_local.py
-```
-
-## 三、当前四条工作流
-
-1、W1 研究设计助手
-
-```text
-1I-1-1 → 3L-1-1 → 3L-1-2 → 2O-1-1 → 9E-1-1
-```
-
-2、W2 访谈设计助手
-
-```text
-从零生成：2O-2-1 → 1I-2-1 → 3L-2-1 → 3L-2-2 → 2O-2-2 → 9E-2-2
-已有审查：2O-2-1 → 1I-2-2 ─────────→ 3L-2-2 → 2O-2-2 → 9E-2-2
-```
-
-3、W3 质性材料分析
-
-```text
-1I-3-1 → 3L-3-1 → 7C-3-1 → 3L-3-2 → 2O-3-1 → 9E-3-1
-```
-
-4、W4 研究质量质检
-
-```text
-1I-4-1 → 3L-4-1 → 7C-4-1 → 3L-4-2 → 2O-4-1 → 9E-4-1
-```
-
-W3、W4 的 `7C` 节点只接受原文完全匹配或仅空白差异匹配。模型改写、拼接或虚构的引文会被清空并加入拒绝清单。
-
-活动项目模式会在各工作流最终输出前增加 `3L-1-3`、`3L-2-3`、`3L-3-3` 或 `3L-4-3` 项目卡写回建议节点。临时单次模式不会调用该节点，也不会增加对应 API 用量。
-
-## 四、项目卡与串联
-
-1、在左侧“当前项目”区域新建项目，或继续使用“临时单次模式”。
-
-2、项目模式下，W1—W4 表单会预填已经确认的项目字段；文件输入始终需要重新上传。
-
-3、工作流完成后，逐项勾选需要写回的字段，再选择进入下一步或返回项目总览。
-
-4、修改上游字段时，已经完成的下游阶段会标记为“需要重新生成”；旧结果保留用于比较。
-
-5、项目卡支持切换、重命名、删除、导出和导入。导入时总是生成隔离副本。
-
-## 五、模型配置
-
-免绑卡演示默认推荐使用 OpenRouter 的免费模型路由：
-
-```text
-MODEL_PROVIDER=openrouter
-MODEL_BASE_URL=https://openrouter.ai/api/v1
-MODEL_NAME=openrouter/free
-APP_MODE=live
-```
-
-运行 `python scripts/connect_openrouter_oauth.py` 可通过一次浏览器 OAuth 授权，将密钥直接写入
-已连接的 Vercel Production/Preview，不在终端或仓库中落盘。免费模型有每日请求限制，适合演示和
-低频试用；真实敏感访谈应在 OpenRouter 隐私设置中禁止训练与日志，并改用具备稳定数据政策的
-付费 Provider。`.env.example` 仍保留 Vercel AI Gateway、阶跃和 DeepSeek 备用块。
-
-多模态 Provider 独立配置：
-
-```text
-# Deepgram：分句时间戳与置信度齐全，高置信片段可自动进入 W3
-ASR_PROVIDER=deepgram
-DEEPGRAM_API_KEY=你的Deepgram密钥
-
-# 阶跃 ASR 是可选备用；官方不返回置信度，因此进入人工复核
-# ASR_PROVIDER=stepfun
-
-# 图片和扫描 PDF 的 bbox、页码与行置信度
 OCR_PROVIDER=baidu
-BAIDU_OCR_API_KEY=你的百度OCR_AK
-BAIDU_OCR_SECRET_KEY=你的百度OCR_SK
-
-# 大文件网页上传：在 Vercel Storage 中连接 Public Blob Store 后自动注入
-BLOB_READ_WRITE_TOKEN=vercel_blob_rw_...
-BLOB_CLEANUP_ENABLED=true
+BAIDU_OCR_API_KEY=百度OCR API Key
+BAIDU_OCR_SECRET_KEY=百度OCR Secret Key
 ```
 
-Vercel OIDC 只负责文本模型；Deepgram 和百度密钥仍需单独配置。所有长期密钥只放服务端 `.env` 或部署平台环境变量。
+真实密钥只能保存在服务器 `.env`，不得提交仓库或发送到聊天中。
 
-Vercel Function 单次请求体仍只有 4.5 MB。网页对 4 MB 以内文件沿用 multipart 直传；更大的文件先由浏览器直接传到 Public Blob Store，随后后端只接收 URL。分析任务结束后默认删除临时 Blob。当前应用没有用户登录体系，因此不要把上传令牌接口暴露给不受信任的公开流量；团队演示应限制访问，并只上传已授权、脱敏材料。
-
-开发时可将 `APP_MODE=mock`，这样不会调用真实 API，也不会产生费用。模拟结果只能用于检查工程链路，不能评价 Agent 的研究能力。
-
-## 六、质量门禁与测试命令
-
-提交代码前优先运行完整质量门禁：
+## 五、本地质量检查
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\run_quality_gate.py
+python -m pytest -q
+python -m ruff check app tests
+python -m mypy app
 ```
-
-它会依次检查敏感文件和大文件、Python 规范与类型、后端测试、浏览器项目卡测试、前端语法，以及三组模拟回归；全程不调用付费模型。
-
-运行不产生 API 费用的自动测试：
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest
-node --test tests\js\test_project_store.cjs
-```
-
-检查代码规范：
-
-```powershell
-.\.venv\Scripts\python.exe -m ruff check .
-.\.venv\Scripts\python.exe -m mypy app
-```
-
-运行 11 例模拟回归：
-
-```powershell
-.\.venv\Scripts\python.exe scripts\run_regression.py
-```
-
-运行 40 例意图路由回归：
-
-```powershell
-.\.venv\Scripts\python.exe scripts\run_routing_regression.py
-```
-
-运行四工作流项目卡写回回归：
-
-```powershell
-.\.venv\Scripts\python.exe scripts\run_project_regression.py
-```
-
-运行 11 例真实模型回归，会使用 `.env` 当前启用的服务商并产生 API 费用：
-
-```powershell
-.\.venv\Scripts\python.exe scripts\run_regression.py --live
-.\.venv\Scripts\python.exe scripts\run_routing_regression.py --live
-.\.venv\Scripts\python.exe scripts\run_project_regression.py --live
-```
-
-结果保存在 `test-results/mock/` 或 `test-results/live/`。每例的输入、逐节点输出和最终回答都保持原样。
-
-## 七、后端接口
-
-- `GET /api/health`：配置与模型状态；
-- `GET /api/workflows`：四条工作流及字段定义；
-- `POST /api/route`：自由描述任务并获得工作流推荐，不创建运行记录；
-- `POST /api/runs`：创建一次运行；项目模式可附带白名单化的 `project_context_json`；
-- `GET /api/runs/{run_id}`：轮询节点进度和结果；
-- `GET /api/runs/{run_id}/download.md`：下载最终 Markdown；
-- `GET /docs`：FastAPI 自动生成的接口调试页。
-
-本地页面继续使用 `/api/*` 接口。面向清小搭的标准接口为：
-
-- `GET /v1/models`：Bearer 鉴权后的模型列表；
-- `POST /v1/chat/completions`：纯文本消息做意图识别；携带附件时执行多模态接入和 W3 完整闭环；
-- `stream: true`：返回标准 Server-Sent Events，最后依次给出 stop 帧和 `[DONE]`；
-- `max_tokens: 1`：返回最小探测响应，不调用模型。
-
-调用标准接口时使用 `AGENT_API_KEY`；模型服务使用 `MODEL_API_KEY`。两者必须不同。多模态配置、证据门控和验收见 `docs/v2.2.5-多模态验收与部署.md`。
-
-## 八、数据与版本边界
-
-- 不使用数据库，不创建用户账号；
-- 上传文件只存在于本次请求内，不写入项目目录；
-- 运行记录保存在后端内存，服务重启即清空；
-- 项目卡使用当前浏览器 `localStorage`，不跨浏览器或设备同步；
-- 单项目上限约 1MB、全部项目安全预算约 4MB，存储失败时降级为当前页面临时项目；
-- 项目卡只保存材料编号、文件名、类型、摘要、字符数和哈希，不保存原始附件；
-- PDF 优先读取文字层，文字层不足时回退到逐页 OCR；图片保存 bbox，音频保存毫秒时间戳；
-- 阶跃文件 ASR 缺少官方置信度，默认只进入人工复核；需要自动进入 W3 时选择 Deepgram；
-- 同一浏览器同时只运行一条工作流；
-- Markdown 仍是单次运行的正式成果导出格式；项目整体可另行导出 JSON。
-
-## 九、GitHub 协作与发布
-
-- 首次建立私库：见 `docs/GitHub首次建库操作.md`；
-- 分支、提交和评审规则：见 `CONTRIBUTING.md`；
-- v1.4.0 发布、验收与回滚：见 `docs/v1.4.0-协作发布与回滚.md`；
-- 本地安全检查：`.\.venv\Scripts\python.exe scripts\check_repository_safety.py`；
-- 生成源码发布包：`.\.venv\Scripts\python.exe scripts\build_release.py`。
-
-GitHub Actions 会在 Pull Request 和 `main` 更新时自动执行完整质量门；推送与 `pyproject.toml` 一致的 `v*` 标签时，会再次验收并创建带 SHA-256 校验文件的 GitHub Release。
-
-v1.1.0—v1.4.0 历史说明继续保留；v1.3.0 功能搭建见 `docs/v1.3.0-搭建与验收.md`，v1.4.0 工程化升级见 `docs/v1.4.0-协作发布与回滚.md`。

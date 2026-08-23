@@ -103,7 +103,10 @@ class StepFunSSEASRProvider(ASRProvider):
             raise MaterialIngestError(
                 "XDW-ASR-TRANSPORT", "音频转写网络请求失败，请稍后重试。", retryable=True
             ) from exc
-        text = "\n".join(dict.fromkeys(item.strip() for item in texts if item.strip()))
+        # SSE deltas may be individual Chinese characters. Joining them with
+        # newlines produced the one-character-per-line display seen in v3.4.1.
+        # Keep the sequence intact; timestamps are retained in segment metadata.
+        text = "".join(item.strip() for item in texts if item.strip())
         if not text and segments:
             text = "\n".join(item.text for item in segments)
         if not text:

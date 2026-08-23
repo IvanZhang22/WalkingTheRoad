@@ -16,6 +16,7 @@ from pathlib import Path
 from threading import RLock
 from uuid import uuid4
 
+from app.llm import LLMClient
 from app.multimodal.contracts import InputAudioContentPart
 from app.multimodal.downloader import SafeDownloader
 from app.multimodal.errors import MaterialIngestError
@@ -37,6 +38,7 @@ class AudioJob:
     completed_count: int
     failed_count: int
     first_preview: str
+    processed_preview: str
     transcript: str
     error: str
     created_at: str
@@ -65,6 +67,11 @@ class AudioJobStore:
                     PRIMARY KEY(job_id, segment_index)
                 );
             """)
+            columns = {row[1] for row in self._connection.execute("PRAGMA table_info(audio_jobs)")}
+            if "processed_preview" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE audio_jobs ADD COLUMN processed_preview TEXT NOT NULL DEFAULT ''"
+                )
 
     def create(
         self, session_id: str, attachment: InputAudioContentPart, raw_path: Path
@@ -73,7 +80,8 @@ class AudioJobStore:
         now = _now()
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT INTO audio_jobs VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, 0, 0, '', '', '', 0, ?, ?)",
+                "INSERT INTO audio_jobs(job_id,session_id,filename,source_url,source_format,raw_path,status,segment_count,completed_count,failed_count,first_preview,processed_preview,transcript,error,review_confirmed,created_at,updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, 0, 0, '', '', '', '', 0, ?, ?)",
                 (
                     job_id,
                     session_id,
@@ -90,7 +98,7 @@ class AudioJobStore:
     def get(self, job_id: str) -> AudioJob | None:
         with self._lock:
             row = self._connection.execute(
-                "SELECT job_id,session_id,filename,status,segment_count,completed_count,failed_count,first_preview,transcript,error,created_at FROM audio_jobs WHERE job_id=?",
+                "SELECT job_id,session_id,filename,status,segment_count,completed_count,failed_count,first_preview,processed_preview,transcript,error,created_at FROM audio_jobs WHERE job_id=?",
                 (job_id,),
             ).fetchone()
         return AudioJob(*row) if row else None
@@ -189,6 +197,7 @@ class AudioJobService:
         concurrency: int = 3,
         max_segments: int = 24,
         max_chars: int = 12000,
+        llm: LLMClient | None = None,
     ) -> None:
         self.store, self.provider, self.storage_dir = store, provider, storage_dir
         self.segment_seconds, self.concurrency, self.max_segments, self.max_chars = (
@@ -197,6 +206,7 @@ class AudioJobService:
             max_segments,
             max_chars,
         )
+        self.llm = llm
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -251,17 +261,44 @@ class AudioJobService:
                     error=self.store.failure_summary(job_id),
                 )
             else:
+                raw_preview = text[:4000]
                 self.store.update(
                     job_id,
                     status="awaiting_review",
                     completed_count=completed,
                     transcript=text,
-                    first_preview=text[:4000],
+                    first_preview=raw_preview,
+                    processed_preview=await self._prepare_preview(raw_preview),
                 )
         except Exception as exc:
             self.store.update(
                 job_id, status="failed", error=f"音频处理未完成：{type(exc).__name__}"
             )
+
+    async def _prepare_preview(self, raw_preview: str) -> str:
+        """Return a cautious, readable preview; raw ASR always remains intact."""
+        compact = "".join(raw_preview.split())
+        if not compact:
+            return ""
+        if self.llm is None:
+            return compact
+        prompt = (
+            "下面是访谈音频首段的机器转写，可能有漏字、同音字和断句错误。"
+            "请只做可读性整理：合并无意义换行，按话题分段；保留口语、犹豫和不确定处，"
+            "不补造事实，不把听不清内容改写成确定陈述。输出必须是：\n"
+            "# 一、内容提要\n## 1、...\n## 2、...\n\n# 二、整理后的转写\n（分段正文）\n"
+            "不要输出解释、免责声明或代码块。\n\n<raw_asr>\n" + compact[:12000] + "\n</raw_asr>"
+        )
+        try:
+            answer = await self.llm.complete(
+                node_id="3A-3-4",
+                system_prompt="你是谨慎的访谈转写整理助手。",
+                user_prompt=prompt,
+                temperature=0.1,
+            )
+            return answer.strip()[:16000] if answer.strip() else compact
+        except Exception:
+            return compact
 
     def _raw_path(self, job_id: str) -> str:
         with self.store._lock:

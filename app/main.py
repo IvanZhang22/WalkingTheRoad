@@ -115,7 +115,7 @@ def create_app(
     app = FastAPI(
         default_response_class=Utf8JSONResponse,
         title="行小道本地 Agent",
-        version="3.4.1",
+        version="3.4.2",
         description="四工作流全代码版：OpenAI 兼容协议、项目卡串联与协作发布基线",
     )
     app.state.settings = active_settings
@@ -214,6 +214,7 @@ def create_app(
         concurrency=active_settings.audio_job_max_concurrency,
         max_segments=active_settings.audio_job_max_segments,
         max_chars=active_settings.audio_job_max_chars_per_segment,
+        llm=active_llm,
     )
     app.state.audio_downloader = SafeDownloader(
         max_bytes=active_settings.max_upload_bytes,
@@ -262,7 +263,7 @@ def create_app(
     async def health() -> dict[str, Any]:
         return {
             "status": "ok" if app.state.llm is not None else "configuration_required",
-            "version": "3.4.1",
+            "version": "3.4.2",
             "app_mode": active_settings.app_mode,
             "provider": active_settings.provider,
             "model": active_settings.model,
@@ -524,7 +525,7 @@ def create_app(
 
     @app.get("/api/project")
     async def project_info() -> dict[str, str]:
-        return {"project_root": str(PROJECT_ROOT), "version": "3.4.1"}
+        return {"project_root": str(PROJECT_ROOT), "version": "3.4.2"}
 
     return app
 
