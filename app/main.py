@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Str
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
+from app.audio_jobs import AudioJobService, AudioJobStore
 from app.blob_upload import (
     BlobGenerateTokenRequest,
     create_client_upload_token,
@@ -27,6 +28,8 @@ from app.knowledge import MethodologyKnowledgeBase
 from app.llm import LLMClient, LLMError, MockLLMClient, OpenAICompatibleClient
 from app.models import IntentRouteRequest, IntentRouteResult, ProjectContext
 from app.multimodal.audio_relay import TemporaryAudioRelay
+from app.multimodal.downloader import SafeDownloader
+from app.multimodal.providers.stepfun_sse_asr import StepFunSSEASRProvider
 from app.multimodal.service import (
     MaterialIngestService,
     build_live_ingest_service,
@@ -72,6 +75,21 @@ def _conversation_database_path() -> Path:
     return PROJECT_ROOT / "data" / "qingxiaoda_conversations.sqlite3"
 
 
+def _audio_job_database_path() -> Path:
+    configured_path = os.getenv("AUDIO_JOB_DATABASE_PATH", "").strip()
+    if configured_path:
+        return Path(configured_path).expanduser()
+    return _conversation_database_path().with_name("xingxiaodao_audio_jobs.sqlite3")
+
+
+def _audio_job_storage_path(settings: Settings) -> Path:
+    if settings.audio_job_storage_dir:
+        return Path(settings.audio_job_storage_dir).expanduser()
+    if os.getenv("VERCEL", "").strip():
+        return Path(tempfile.gettempdir()) / "xingxiaodao" / "audio-jobs"
+    return PROJECT_ROOT / "data" / "audio-jobs"
+
+
 def _methodology_knowledge_path() -> Path:
     # Keep curated, versioned reference data separate from the writable runtime root.
     # Tests intentionally replace PROJECT_ROOT with a temporary directory.
@@ -97,14 +115,16 @@ def create_app(
     app = FastAPI(
         default_response_class=Utf8JSONResponse,
         title="行小道本地 Agent",
-        version="3.3.1",
+        version="3.4.0",
         description="四工作流全代码版：OpenAI 兼容协议、项目卡串联与协作发布基线",
     )
     app.state.settings = active_settings
     app.state.store = store
     app.state.llm = active_llm
     app.state.llm_error = llm_error
-    app.state.knowledge_base = MethodologyKnowledgeBase.from_directory(_methodology_knowledge_path())
+    app.state.knowledge_base = MethodologyKnowledgeBase.from_directory(
+        _methodology_knowledge_path()
+    )
     audio_relay = (
         TemporaryAudioRelay(
             public_base_url=active_settings.asr_relay_public_base_url,
@@ -178,6 +198,37 @@ def create_app(
     app.state.multimodal_provider = multimodal_provider
     app.state.audio_relay = audio_relay
     app.state.tasks = set()
+    audio_provider = None
+    if active_settings.asr_provider == "stepfun_sse" and active_settings.stepfun_asr_api_key:
+        audio_provider = StepFunSSEASRProvider(
+            api_key=active_settings.stepfun_asr_api_key,
+            base_url=active_settings.stepfun_asr_sse_base_url,
+            model=active_settings.stepfun_asr_sse_model,
+            timeout=active_settings.stepfun_asr_sse_timeout_seconds,
+        )
+    app.state.audio_jobs = AudioJobService(
+        store=AudioJobStore(_audio_job_database_path()),
+        provider=audio_provider,
+        storage_dir=_audio_job_storage_path(active_settings),
+        segment_seconds=active_settings.audio_job_segment_seconds,
+        concurrency=active_settings.audio_job_max_concurrency,
+        max_segments=active_settings.audio_job_max_segments,
+        max_chars=active_settings.audio_job_max_chars_per_segment,
+    )
+    app.state.audio_downloader = SafeDownloader(
+        max_bytes=active_settings.max_upload_bytes,
+        connect_timeout=active_settings.multimodal_connect_timeout_seconds,
+        read_timeout=active_settings.multimodal_read_timeout_seconds,
+        max_redirects=active_settings.multimodal_max_redirects,
+        trusted_public_hosts=frozenset({"*.public.blob.vercel-storage.com"}),
+    )
+    app.state.audio_jobs.store.cleanup(
+        active_settings.audio_job_raw_retention_hours,
+        active_settings.audio_job_transcript_retention_days,
+    )
+    if app.state.conversation is not None:
+        app.state.conversation.audio_jobs = app.state.audio_jobs
+        app.state.conversation.audio_downloader = app.state.audio_downloader
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -211,7 +262,7 @@ def create_app(
     async def health() -> dict[str, Any]:
         return {
             "status": "ok" if app.state.llm is not None else "configuration_required",
-            "version": "3.3.1",
+            "version": "3.4.0",
             "app_mode": active_settings.app_mode,
             "provider": active_settings.provider,
             "model": active_settings.model,
@@ -226,6 +277,12 @@ def create_app(
             "ocr_provider": active_settings.ocr_provider,
             "ocr_key_configured": active_settings.baidu_ocr_key_configured,
             "provider_readiness_check": "configuration_only",
+            "audio_queue": {
+                "enabled": audio_provider is not None,
+                "segment_seconds": active_settings.audio_job_segment_seconds,
+                "max_concurrency": active_settings.audio_job_max_concurrency,
+                "max_segments": active_settings.audio_job_max_segments,
+            },
             "large_upload_configured": active_settings.blob_upload_configured,
             "max_upload_mb": active_settings.max_upload_bytes // 1024 // 1024,
             "knowledge_base": app.state.knowledge_base.status(),
@@ -235,6 +292,24 @@ def create_app(
     @app.get("/api/knowledge/status")
     async def knowledge_status() -> dict[str, object]:
         return cast(dict[str, object], app.state.knowledge_base.status())
+
+    @app.get("/api/audio-jobs/{job_id}")
+    async def get_audio_job(
+        job_id: str, authorization: str | None = Header(default=None)
+    ) -> dict[str, Any]:
+        authorize_bearer(authorization, active_settings.agent_api_key)
+        job = app.state.audio_jobs.store.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="音频任务不存在或已过期。")
+        return {
+            "job_id": job.job_id,
+            "status": job.status,
+            "filename": job.filename,
+            "segment_count": job.segment_count,
+            "completed_count": job.completed_count,
+            "failed_count": job.failed_count,
+            "error": job.error,
+        }
 
     @app.get("/api/internal/asr-audio/{token}", include_in_schema=False)
     async def relay_audio(token: str) -> FileResponse:
@@ -374,6 +449,7 @@ def create_app(
         record = await store.create(workflow_id)
         service = app.state.workflow_service
         assert service is not None
+
         async def execute_and_cleanup() -> None:
             try:
                 await service.execute(
@@ -448,7 +524,7 @@ def create_app(
 
     @app.get("/api/project")
     async def project_info() -> dict[str, str]:
-        return {"project_root": str(PROJECT_ROOT), "version": "3.3.1"}
+        return {"project_root": str(PROJECT_ROOT), "version": "3.4.0"}
 
     return app
 

@@ -16,9 +16,11 @@ from threading import RLock
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
+from app.audio_jobs import AudioJobService
 from app.dialogue import OpenDialogueResponder
 from app.models import IntentRouteResult, RunStatus
 from app.multimodal.contracts import FileContentPart, ImageUrlContentPart, InputAudioContentPart
+from app.multimodal.downloader import SafeDownloader
 from app.multimodal.models import Material
 from app.routing import IntentRouter
 
@@ -200,8 +202,14 @@ class ConversationStore:
             project.setdefault("project_id", project_id)
             project.setdefault("project_name", "当前研究项目")
             for key in (
-                "current_stage", "current_workflow", "research_topic", "research_question",
-                "target_group", "research_location", "research_method", "last_user_intent",
+                "current_stage",
+                "current_workflow",
+                "research_topic",
+                "research_question",
+                "target_group",
+                "research_location",
+                "research_method",
+                "last_user_intent",
                 "last_system_action",
             ):
                 project.setdefault(key, "")
@@ -211,7 +219,9 @@ class ConversationStore:
             statuses = project.setdefault("workflow_status", {})
             for workflow_id in WORKFLOW_TITLES:
                 statuses.setdefault(workflow_id, "NOT_STARTED")
-            project.setdefault("active_menu", {"menu_id": "main_menu", "status": "ACTIVE", "options": {}})
+            project.setdefault(
+                "active_menu", {"menu_id": "main_menu", "status": "ACTIVE", "options": {}}
+            )
             interaction = project.setdefault("interaction", {})
             interaction.setdefault("workflow_id", None)
             interaction.setdefault("step", "menu")
@@ -295,7 +305,11 @@ class ConversationStore:
         if workflow_id == "w2" and fields.get("mode"):
             project["research_method"] = "半结构式访谈（待研究者确认）"
         if workflow_id == "w3" and fields.get("__material_names"):
-            known = {str(item.get("name")) for item in project.get("uploaded_materials", []) if isinstance(item, dict)}
+            known = {
+                str(item.get("name"))
+                for item in project.get("uploaded_materials", [])
+                if isinstance(item, dict)
+            }
             for name in fields["__material_names"]:
                 if name not in known:
                     project.setdefault("uploaded_materials", []).append(
@@ -309,31 +323,73 @@ class ConversationStore:
         options: dict[str, str] = {}
         menu_id = "free_text"
         if workflow_id is None or step == "menu":
-            menu_id, options = "main_menu", {"1": "START_W1", "2": "START_W2", "3": "START_W3", "4": "START_W4"}
+            menu_id, options = (
+                "main_menu",
+                {"1": "START_W1", "2": "START_W2", "3": "START_W3", "4": "START_W4"},
+            )
         elif step == "mode":
-            menu_id, options = "interview_mode", {"1": "GENERATE_INTERVIEW", "2": "REVIEW_INTERVIEW"}
+            menu_id, options = (
+                "interview_mode",
+                {"1": "GENERATE_INTERVIEW", "2": "REVIEW_INTERVIEW"},
+            )
         elif step == "source_type":
-            menu_id, options = "material_type", {"1": "ONE_INTERVIEW", "2": "MANY_INTERVIEWS", "3": "FIELD_NOTES", "4": "MIXED_MATERIALS"}
+            menu_id, options = (
+                "material_type",
+                {
+                    "1": "ONE_INTERVIEW",
+                    "2": "MANY_INTERVIEWS",
+                    "3": "FIELD_NOTES",
+                    "4": "MIXED_MATERIALS",
+                },
+            )
         elif step == "privacy_consent":
-            menu_id, options = "privacy_consent", {"1": "CONSENT_UPLOAD", "2": "ANONYMISATION_HELP", "3": "CANCEL_UPLOAD"}
+            menu_id, options = (
+                "privacy_consent",
+                {"1": "CONSENT_UPLOAD", "2": "ANONYMISATION_HELP", "3": "CANCEL_UPLOAD"},
+            )
         elif step == "privacy_help":
             menu_id, options = "privacy_help", {"1": "CONTINUE_UPLOAD", "2": "RETURN_PROJECT_HOME"}
         elif step == "material_confirm":
-            menu_id, options = "material_confirm", {"1": "ANALYSE_MATERIALS", "2": "RECLASSIFY_MATERIALS", "3": "CANCEL_MATERIALS"}
+            menu_id, options = (
+                "material_confirm",
+                {"1": "ANALYSE_MATERIALS", "2": "RECLASSIFY_MATERIALS", "3": "CANCEL_MATERIALS"},
+            )
         elif step == "low_confidence":
-            menu_id, options = "low_confidence_material", {"1": "UPLOAD_CORRECTED", "2": "USE_HIGH_CONFIDENCE_ONLY", "3": "CANCEL_MATERIALS"}
+            menu_id, options = (
+                "low_confidence_material",
+                {"1": "UPLOAD_CORRECTED", "2": "USE_HIGH_CONFIDENCE_ONLY", "3": "CANCEL_MATERIALS"},
+            )
         elif step == "manual_review":
-            menu_id, options = "manual_review_transcript", {"1": "CONFIRM_TRANSCRIPT", "2": "UPLOAD_CORRECTED", "3": "CANCEL_MATERIALS"}
+            menu_id, options = (
+                "manual_review_transcript",
+                {"1": "CONFIRM_TRANSCRIPT", "2": "UPLOAD_CORRECTED", "3": "CANCEL_MATERIALS"},
+            )
         elif step == "result_review":
-            menu_id, options = "result_review", {"1": "CONFIRM_RESULT", "2": "MODIFY_RESULT", "3": "RERUN_WORKFLOW", "4": "RETURN_PROJECT_HOME"}
+            menu_id, options = (
+                "result_review",
+                {
+                    "1": "CONFIRM_RESULT",
+                    "2": "MODIFY_RESULT",
+                    "3": "RERUN_WORKFLOW",
+                    "4": "RETURN_PROJECT_HOME",
+                },
+            )
         elif step == "after_confirm":
             menu_id = "after_confirmation"
-            options = {"1": "CONTINUE_NEXT" if workflow_id != "w4" else "RETURN_PROJECT_HOME", "2": "RETURN_PROJECT_HOME" if workflow_id != "w4" else "EXPORT_CONFIRMED"}
+            options = {
+                "1": "CONTINUE_NEXT" if workflow_id != "w4" else "RETURN_PROJECT_HOME",
+                "2": "RETURN_PROJECT_HOME" if workflow_id != "w4" else "EXPORT_CONFIRMED",
+            }
             if workflow_id != "w4":
                 options["3"] = "EXPORT_CONFIRMED"
         elif step == "conflict_confirm":
             menu_id, options = "context_conflict", {"1": "REPLACE_CONTEXT", "2": "KEEP_CONTEXT"}
-        return {"menu_id": menu_id, "status": "ACTIVE" if options else "NONE", "options": options, "scope": workflow_id or "project"}
+        return {
+            "menu_id": menu_id,
+            "status": "ACTIVE" if options else "NONE",
+            "options": options,
+            "scope": workflow_id or "project",
+        }
 
     def get(self, session_id: str) -> ConversationState:
         with self._lock:
@@ -398,6 +454,9 @@ class QingxiaodaConversation:
         self.material_ingestor = material_ingestor
         self.intent_router = intent_router
         self.dialogue_responder = dialogue_responder
+        # Wired by create_app.  Optional keeps unit tests and non-audio modes simple.
+        self.audio_jobs: AudioJobService | None = None
+        self.audio_downloader: SafeDownloader | None = None
 
     async def reply(
         self,
@@ -411,6 +470,9 @@ class QingxiaodaConversation:
         safe_session_id = (session_id or f"temporary-{uuid4().hex}")[:200]
         state = self.store.get(safe_session_id)
         message = text.strip()
+
+        if state.step == "audio_job":
+            return await self._handle_audio_job(state, message)
 
         project_command = self._handle_project_command(state, message)
         if project_command is not None:
@@ -467,7 +529,9 @@ class QingxiaodaConversation:
                 ConversationState(safe_session_id, fields={}, project=project), explicit_workflow
             )
         if self._is_export_intent(message):
-            self.store.save(ConversationState(safe_session_id, fields={}, project=state.project_values()))
+            self.store.save(
+                ConversationState(safe_session_id, fields={}, project=state.project_values())
+            )
             return self._export_reply(state.project_values())
 
         if state.workflow_id is None:
@@ -479,8 +543,15 @@ class QingxiaodaConversation:
     @staticmethod
     def _is_project_home(message: str) -> bool:
         return message.strip() in {
-            "主菜单", "菜单", "0", "重新开始", "重新选择任务", "项目主页", "回到项目主页",
-            "返回项目主页", "回主页",
+            "主菜单",
+            "菜单",
+            "0",
+            "重新开始",
+            "重新选择任务",
+            "项目主页",
+            "回到项目主页",
+            "返回项目主页",
+            "回主页",
         }
 
     @staticmethod
@@ -494,9 +565,14 @@ class QingxiaodaConversation:
         text = message.lower()
         if not any(action in text for action in ("进入", "开始", "切换", "使用", "打开")):
             return None
-        if any(token in text for token in ("改访谈", "修改访谈", "访谈提纲", "访谈问题", "设计访谈")):
+        if any(
+            token in text for token in ("改访谈", "修改访谈", "访谈提纲", "访谈问题", "设计访谈")
+        ):
             return "w2"
-        if any(token in text for token in ("分析材料", "分析访谈", "主题分析", "编码", "提炼主题", "田野笔记")):
+        if any(
+            token in text
+            for token in ("分析材料", "分析访谈", "主题分析", "编码", "提炼主题", "田野笔记")
+        ):
             return "w3"
         if any(token in text for token in ("核验证据", "检查结论", "结论质检", "反例", "证据是否")):
             return "w4"
@@ -520,8 +596,10 @@ class QingxiaodaConversation:
                 target["archived_at"] = ConversationStore._now()
                 workspace["pending_action"] = None
                 available = [
-                    candidate for candidate in workspace["projects"].values()
-                    if candidate["project_id"] != target["project_id"] and not candidate.get("archived_at")
+                    candidate
+                    for candidate in workspace["projects"].values()
+                    if candidate["project_id"] != target["project_id"]
+                    and not candidate.get("archived_at")
                 ]
                 if available:
                     workspace["active_project_id"] = available[0]["project_id"]
@@ -531,7 +609,10 @@ class QingxiaodaConversation:
                     workspace["active_project_id"] = new_project["project_id"]
                 active_view = self._project_view(workspace, workspace["active_project_id"])
                 self.store.save(ConversationState(state.session_id, project=active_view))
-                return "已归档该项目。归档内容会保留 30 天；你可以说“查看归档项目”或“恢复项目：项目名称”。\n\n" + self._menu_for(active_view)
+                return (
+                    "已归档该项目。归档内容会保留 30 天；你可以说“查看归档项目”或“恢复项目：项目名称”。\n\n"
+                    + self._menu_for(active_view)
+                )
             if message in {"2", "取消", "不用了", "否"}:
                 workspace["pending_action"] = None
                 self.store.save(ConversationState(state.session_id, project=project))
@@ -551,12 +632,16 @@ class QingxiaodaConversation:
                 response += "\n\n已归档：\n" + "\n".join(archived_lines)
             return response + "\n\n可直接说“切换项目：项目名称”或“新建项目：项目名称”。"
         if message in {"查看归档项目", "归档项目列表"}:
-            archived_projects = [item for item in workspace["projects"].values() if item.get("archived_at")]
+            archived_projects = [
+                item for item in workspace["projects"].values() if item.get("archived_at")
+            ]
             if not archived_projects:
                 return "目前没有已归档项目。"
-            return "已归档项目（归档后最多保留 30 天）：\n" + "\n".join(
-                f"- {item['project_name']}" for item in archived_projects
-            ) + "\n\n如需继续，可说“恢复项目：项目名称”。"
+            return (
+                "已归档项目（归档后最多保留 30 天）：\n"
+                + "\n".join(f"- {item['project_name']}" for item in archived_projects)
+                + "\n\n如需继续，可说“恢复项目：项目名称”。"
+            )
 
         command, separator, name = message.partition("：")
         if not separator:
@@ -615,8 +700,17 @@ class QingxiaodaConversation:
     def _accept_pending_workflow(message: str) -> bool:
         normalized = message.strip().lower()
         return normalized in {
-            "1", "开始", "进入", "继续", "好", "好的", "可以", "开始吧",
-            "进入工作流", "开始整理", "帮我生成",
+            "1",
+            "开始",
+            "进入",
+            "继续",
+            "好",
+            "好的",
+            "可以",
+            "开始吧",
+            "进入工作流",
+            "开始整理",
+            "帮我生成",
         }
 
     @staticmethod
@@ -627,9 +721,18 @@ class QingxiaodaConversation:
         # During a structured form, a sentence containing “如何” may itself
         # be the research question the user is supplying.  Only intercept an
         # unmistakable help/question turn, so normal field collection wins.
-        return text.startswith((
-            "为什么", "怎么", "能不能", "可以", "是否可以", "你能", "什么意思", "请问",
-        ))
+        return text.startswith(
+            (
+                "为什么",
+                "怎么",
+                "能不能",
+                "可以",
+                "是否可以",
+                "你能",
+                "什么意思",
+                "请问",
+            )
+        )
 
     async def _open_dialogue_reply(
         self,
@@ -657,11 +760,12 @@ class QingxiaodaConversation:
         else:
             answer = "我先根据你的情况给出建议；如需进一步整理，也可以继续补充。"
         if not recommended:
-            return answer + "\n\n## 二、下一步\n\n继续补充你的实践场景、已有材料或最想解决的问题即可。"
+            return (
+                answer + "\n\n## 二、下一步\n\n继续补充你的实践场景、已有材料或最想解决的问题即可。"
+            )
         title = WORKFLOW_TITLES[recommended]
         return (
-            answer
-            + f"\n\n## 二、可选下一步\n\n1、回复 **1**，将这件事整理成可执行的{title}。\n"
+            answer + f"\n\n## 二、可选下一步\n\n1、回复 **1**，将这件事整理成可执行的{title}。\n"
             "2、继续直接和我讨论，不会自动进入表单。"
         )
 
@@ -673,7 +777,10 @@ class QingxiaodaConversation:
             route=None,
             active_workflow=state.workflow_id,
         )
-        return answer + "\n\n## 二、当前流程\n\n当前步骤仍保留；要继续填写，直接发送该步骤所需信息即可。"
+        return (
+            answer
+            + "\n\n## 二、当前流程\n\n当前步骤仍保留；要继续填写，直接发送该步骤所需信息即可。"
+        )
 
     async def _choose_workflow(
         self,
@@ -740,9 +847,7 @@ class QingxiaodaConversation:
             else:
                 step = "research_question"
                 prompt = "好，我们开始材料分析。\n\n第一步：这批材料要回答的研究问题是什么？"
-            next_state = ConversationState(
-                state.session_id, "w3", step, fields, project
-            )
+            next_state = ConversationState(state.session_id, "w3", step, fields, project)
         else:
             if project.get("research_question"):
                 fields["research_question"] = project["research_question"]
@@ -751,9 +856,7 @@ class QingxiaodaConversation:
             else:
                 step = "research_question"
                 prompt = "好，我们先明确要检查的研究问题。\n\n请写出这项研究希望回答的研究问题。"
-            next_state = ConversationState(
-                state.session_id, "w4", step, fields, project
-            )
+            next_state = ConversationState(state.session_id, "w4", step, fields, project)
         self.store.save(next_state)
         return prompt
 
@@ -797,7 +900,9 @@ class QingxiaodaConversation:
             if "混合" in lowered:
                 return "4"
         elif step == "privacy_consent":
-            if "匿名" in lowered and not any(token in lowered for token in ("已匿名", "匿名化完成")):
+            if "匿名" in lowered and not any(
+                token in lowered for token in ("已匿名", "匿名化完成")
+            ):
                 return "2"
             if any(token in lowered for token in ("取消", "不上传", "暂不")):
                 return "3"
@@ -872,7 +977,9 @@ class QingxiaodaConversation:
         field = str(fields.pop("__pending_context_field", ""))
         value = str(fields.pop("__pending_context_value", "")).strip()
         if not field or not value:
-            self.store.save(ConversationState(state.session_id, state.workflow_id, "menu", fields, project))
+            self.store.save(
+                ConversationState(state.session_id, state.workflow_id, "menu", fields, project)
+            )
             return self._menu_for(project)
         if message == "1":
             fields[field] = value
@@ -896,7 +1003,9 @@ class QingxiaodaConversation:
         assert workflow_id is not None
         next_step, next_prompt = self._next_step(workflow_id, field, fields)
         if next_step is not None:
-            self.store.save(ConversationState(state.session_id, workflow_id, next_step, fields, project))
+            self.store.save(
+                ConversationState(state.session_id, workflow_id, next_step, fields, project)
+            )
             return next_prompt
         return "已更新当前项目记录。请继续说明你希望如何推进；也可以回到项目主页。"
 
@@ -973,8 +1082,11 @@ class QingxiaodaConversation:
                 step = "research_question" if message == "1" else "review_topic"
             self.store.save(ConversationState(state.session_id, workflow_id, step, fields, project))
             return (
-                (f"我会沿用当前研究问题：“{project['research_question']}”。\n\n计划访谈谁？请描述对象范围或筛选条件。"
-                 if message == "1" and project.get("research_question") else "请写出你想回答的研究问题。")
+                (
+                    f"我会沿用当前研究问题：“{project['research_question']}”。\n\n计划访谈谁？请描述对象范围或筛选条件。"
+                    if message == "1" and project.get("research_question")
+                    else "请写出你想回答的研究问题。"
+                )
                 if message == "1"
                 else "请写出这组问题对应的研究主题或研究问题。"
             )
@@ -1012,7 +1124,9 @@ class QingxiaodaConversation:
             fields["__pending_context_field"] = state.step
             fields["__pending_context_value"] = message
             self.store.save(
-                ConversationState(state.session_id, workflow_id, "conflict_confirm", fields, project)
+                ConversationState(
+                    state.session_id, workflow_id, "conflict_confirm", fields, project
+                )
             )
             return conflict
         fields[state.step] = message
@@ -1029,6 +1143,40 @@ class QingxiaodaConversation:
         state: ConversationState,
         attachments: list[InputAudioContentPart | ImageUrlContentPart | FileContentPart],
     ) -> str:
+        audio = [item for item in attachments if isinstance(item, InputAudioContentPart)]
+        if audio and self.audio_jobs is not None and self.audio_jobs.provider is not None:
+            if len(audio) != 1 or len(attachments) != 1:
+                return "一次请只上传 1 个音频。图片和文档请单独发送，便于分别进入相应的处理流程。"
+            if self.audio_downloader is None:
+                return self._failure_reply(
+                    "音频后台任务服务暂不可用。",
+                    "尚未开始材料分析。",
+                    "请稍后重试，或先上传逐字稿。",
+                )
+            try:
+                job = await self.audio_jobs.submit(
+                    state.session_id, audio[0], self.audio_downloader
+                )
+            except Exception:
+                return self._failure_reply(
+                    "音频文件暂时无法接收。",
+                    "尚未开始材料分析。",
+                    "请检查文件是否仍可下载后重新上传，或先发送逐字稿。",
+                )
+            fields = state.field_values()
+            fields["__audio_job_id"] = job.job_id
+            fields["__material_names"] = [job.filename]
+            self.store.save(
+                ConversationState(
+                    state.session_id, state.workflow_id, "audio_job", fields, state.project_values()
+                )
+            )
+            return (
+                f"已收到音频，正在后台处理。\n\n任务编号：{job.job_id}\n"
+                "音频会先压缩为 16kHz 单声道并按约 5 分钟切分，再最多同时转写 3 段；"
+                "不会把原音频直接发送给研究分析模型。\n\n"
+                "1、回复“查看进度”查看状态\n2、回复“查看首段转写”进行抽样核对\n3、如有失败，回复“继续处理”重试失败分段\n4、回复“取消任务”停止本次处理"
+            )
         if self.material_ingestor is None:
             return self._failure_reply(
                 "材料处理服务暂不可用。",
@@ -1164,7 +1312,13 @@ class QingxiaodaConversation:
             return self._start_workflow(
                 ConversationState(state.session_id, project=project), state.workflow_id
             )
-        if state.step in {"upload", "material_confirm", "material_reclassify", "low_confidence", "manual_review"}:
+        if state.step in {
+            "upload",
+            "material_confirm",
+            "material_reclassify",
+            "low_confidence",
+            "manual_review",
+        }:
             previous = order[-1]
         else:
             try:
@@ -1333,7 +1487,9 @@ class QingxiaodaConversation:
         transcript = str(fields.get("__manual_review_text", "")).strip()
         preview_limit = 4000
         preview = transcript[:preview_limit]
-        suffix = "\n\n（转写较长，此处仅显示前 4000 字。）" if len(transcript) > preview_limit else ""
+        suffix = (
+            "\n\n（转写较长，此处仅显示前 4000 字。）" if len(transcript) > preview_limit else ""
+        )
         return (
             "识别服务已经返回转写，但未提供可用于自动证据门控的置信度。"
             "请先对照原音频核对下面的转写；在你明确确认前，它不会进入正式证据分析。\n\n"
@@ -1342,6 +1498,85 @@ class QingxiaodaConversation:
             "2. 上传人工校对后的逐字稿或更清晰的音频\n"
             "3. 取消本次上传"
         )
+
+    async def _handle_audio_job(self, state: ConversationState, message: str) -> str:
+        """Conversation-facing controls for durable audio jobs.
+
+        Qingxiaoda has no reliable long-running job widget, so commands remain
+        deliberately short and stable in ordinary chat.
+        """
+        job_id = str(state.field_values().get("__audio_job_id", "")).strip()
+        if self.audio_jobs is None or not job_id:
+            return "没有找到正在处理的音频任务。请重新上传音频或返回主菜单。"
+        job = self.audio_jobs.store.get(job_id)
+        if job is None:
+            return "这项音频任务已过期（转写结果最多保留 30 天）。请重新上传需要处理的材料。"
+        compact = message.replace(" ", "")
+        if any(token in compact for token in ("查看进度", "进度", "状态")):
+            labels = {
+                "queued": "已排队",
+                "preparing": "正在准备分段",
+                "transcribing": "正在转写",
+                "awaiting_review": "等待首段抽样核对",
+                "analysing": "正在分析",
+                "succeeded": "已完成",
+                "failed": "有分段未完成",
+                "cancelled": "已取消",
+            }
+            return (
+                f"任务 {job.job_id}：{labels.get(job.status, job.status)}\n\n"
+                f"已完成分段：{job.completed_count}/{job.segment_count or '待生成'}；失败：{job.failed_count}。\n"
+                + (f"提示：{job.error}\n" if job.error else "")
+                + "可回复“查看首段转写”“继续处理”“取消任务”。"
+            )
+        if any(token in compact for token in ("查看首段", "首段转写", "转写预览")):
+            if job.status in {"queued", "preparing", "transcribing"}:
+                return "首段转写尚未完成。请稍后回复“查看进度”。"
+            if not job.first_preview:
+                return "目前没有可供核对的首段转写；如提示失败，请回复“继续处理”。"
+            return (
+                "以下是第一段音频的转写抽样预览（不是整段材料的人工复核）：\n\n"
+                f"--- 首段预览 ---\n{job.first_preview[:4000]}\n--- 预览结束 ---\n\n"
+                "1、回复“确认首段”表示抽样未发现明显问题，继续整理材料\n"
+                "2、回复“继续处理”重试失败分段\n3、回复“取消任务”停止本次处理"
+            )
+        if any(token in compact for token in ("继续处理", "重试", "继续")):
+            if job.status != "failed":
+                return "当前没有失败分段需要重试。你可以回复“查看进度”或“查看首段转写”。"
+            self.audio_jobs.start(job_id)
+            return "已安排只重试失败或尚未开始的分段。请稍后回复“查看进度”。"
+        if any(token in compact for token in ("取消任务", "取消")):
+            self.audio_jobs.store.update(job_id, status="cancelled", error="研究者取消")
+            self.store.save(
+                ConversationState(
+                    state.session_id,
+                    state.workflow_id,
+                    "upload",
+                    state.field_values(),
+                    state.project_values(),
+                )
+            )
+            return "已取消本次音频处理；不会生成研究结论。你可以重新上传材料，或发送逐字稿。"
+        if any(token in compact for token in ("确认首段", "确认转写", "确认继续")):
+            if job.status != "awaiting_review":
+                return "请先等待转写完成，再查看首段转写进行抽样核对。"
+            fields = state.field_values()
+            fields["__material_text"] = job.transcript
+            fields["__material_names"] = [job.filename]
+            fields["__audio_sample_reviewed"] = True
+            confirmed = ConversationState(
+                state.session_id,
+                state.workflow_id,
+                "material_confirm",
+                fields,
+                state.project_values(),
+            )
+            self.store.save(confirmed)
+            return (
+                "已记录：你完成了首段抽样核对。这不替代对整份音频的人工复核。\n\n"
+                + self._material_confirmation_prompt(fields)
+            )
+        return "请回复“查看进度”“查看首段转写”“继续处理”或“取消任务”。"
 
     async def _handle_manual_review(self, state: ConversationState, message: str) -> str:
         fields = state.field_values()
@@ -1439,7 +1674,11 @@ class QingxiaodaConversation:
             project["workflow_status"] = statuses
             confirmed = list(project.get("confirmed_findings", []))
             result = str(project.get("results", {}).get(workflow_id, "")).strip()
-            if result and not any(item.get("workflow_id") == workflow_id for item in confirmed if isinstance(item, dict)):
+            if result and not any(
+                item.get("workflow_id") == workflow_id
+                for item in confirmed
+                if isinstance(item, dict)
+            ):
                 confirmed.append(
                     {
                         "workflow_id": workflow_id,
@@ -1461,7 +1700,9 @@ class QingxiaodaConversation:
                     f"接下来可以继续{WORKFLOW_TITLES[next_workflow]}，也可以回到项目主页或导出已确认成果。\n\n"
                     f"1. 继续{WORKFLOW_TITLES[next_workflow]}\n2. 返回项目主页\n3. 导出当前已确认成果"
                 )
-            return "已记录：这份证据质检结果由你确认采用。\n\n1. 返回项目主页\n2. 导出当前已确认成果"
+            return (
+                "已记录：这份证据质检结果由你确认采用。\n\n1. 返回项目主页\n2. 导出当前已确认成果"
+            )
         if message == "2":
             self.store.save(
                 ConversationState(state.session_id, workflow_id, "result_modify", fields, project)

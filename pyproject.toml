@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xingxiaodao-agent"
-version = "3.3.1"
-description = "行小道：面向大学生社会实践的社科研究辅助 Agent"
+version = "3.4.0"
+description = "琛屽皬閬擄細闈㈠悜澶у鐢熺ぞ浼氬疄璺电殑绀剧鐮旂┒杈呭姪 Agent"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.116,<1",

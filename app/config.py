@@ -79,6 +79,16 @@ class Settings:
     asr_relay_ffmpeg_path: str = "ffmpeg"
     blob_read_write_token: str = ""
     blob_cleanup_enabled: bool = True
+    stepfun_asr_sse_base_url: str = "https://api.stepfun.com/step_plan/v1"
+    stepfun_asr_sse_model: str = "stepaudio-2.5-asr"
+    stepfun_asr_sse_timeout_seconds: int = 180
+    audio_job_storage_dir: str = ""
+    audio_job_segment_seconds: int = 300
+    audio_job_max_concurrency: int = 3
+    audio_job_max_segments: int = 24
+    audio_job_max_chars_per_segment: int = 12_000
+    audio_job_raw_retention_hours: int = 24
+    audio_job_transcript_retention_days: int = 30
 
     @property
     def key_configured(self) -> bool:
@@ -98,7 +108,7 @@ class Settings:
 
     @property
     def asr_key_configured(self) -> bool:
-        if self.asr_provider == "stepfun":
+        if self.asr_provider in {"stepfun", "stepfun_sse"}:
             return self.stepfun_asr_key_configured
         if self.asr_provider == "deepgram":
             return self.deepgram_key_configured
@@ -133,7 +143,7 @@ def get_settings() -> Settings:
         raise ValueError("APP_MODE 只能是 live 或 mock")
 
     asr_provider = os.getenv("ASR_PROVIDER", "disabled").strip().lower()
-    if asr_provider not in {"disabled", "stepfun", "deepgram"}:
+    if asr_provider not in {"disabled", "stepfun", "stepfun_sse", "deepgram"}:
         raise ValueError("ASR_PROVIDER 只能是 disabled、stepfun 或 deepgram")
 
     ocr_provider = os.getenv("OCR_PROVIDER", "disabled").strip().lower()
@@ -232,4 +242,14 @@ def get_settings() -> Settings:
         asr_relay_ffmpeg_path=os.getenv("ASR_RELAY_FFMPEG_PATH", "ffmpeg").strip() or "ffmpeg",
         blob_read_write_token=os.getenv("BLOB_READ_WRITE_TOKEN", ""),
         blob_cleanup_enabled=_boolean("BLOB_CLEANUP_ENABLED", True),
+        stepfun_asr_sse_base_url=os.getenv("STEPFUN_ASR_SSE_BASE_URL", "https://api.stepfun.com/step_plan/v1").rstrip("/"),
+        stepfun_asr_sse_model=os.getenv("STEPFUN_ASR_SSE_MODEL", "stepaudio-2.5-asr"),
+        stepfun_asr_sse_timeout_seconds=_positive_int("STEPFUN_ASR_SSE_TIMEOUT_SECONDS", 180),
+        audio_job_storage_dir=os.getenv("AUDIO_JOB_STORAGE_DIR", "").strip(),
+        audio_job_segment_seconds=_positive_int("AUDIO_JOB_SEGMENT_SECONDS", 300),
+        audio_job_max_concurrency=_positive_int("AUDIO_JOB_MAX_CONCURRENCY", 3),
+        audio_job_max_segments=_positive_int("AUDIO_JOB_MAX_SEGMENTS", 24),
+        audio_job_max_chars_per_segment=_positive_int("AUDIO_JOB_MAX_CHARS_PER_SEGMENT", 12_000),
+        audio_job_raw_retention_hours=_positive_int("AUDIO_JOB_RAW_RETENTION_HOURS", 24),
+        audio_job_transcript_retention_days=_positive_int("AUDIO_JOB_TRANSCRIPT_RETENTION_DAYS", 30),
     )
