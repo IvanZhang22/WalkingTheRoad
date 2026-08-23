@@ -6,7 +6,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, Request, UploadFile, status
 from fastapi.exceptions import RequestValidationError
@@ -97,7 +97,7 @@ def create_app(
     app = FastAPI(
         default_response_class=Utf8JSONResponse,
         title="行小道本地 Agent",
-        version="3.3.0",
+        version="3.3.1",
         description="四工作流全代码版：OpenAI 兼容协议、项目卡串联与协作发布基线",
     )
     app.state.settings = active_settings
@@ -211,7 +211,7 @@ def create_app(
     async def health() -> dict[str, Any]:
         return {
             "status": "ok" if app.state.llm is not None else "configuration_required",
-            "version": "3.3.0",
+            "version": "3.3.1",
             "app_mode": active_settings.app_mode,
             "provider": active_settings.provider,
             "model": active_settings.model,
@@ -225,6 +225,7 @@ def create_app(
             "asr_relay_configured": active_settings.asr_relay_configured,
             "ocr_provider": active_settings.ocr_provider,
             "ocr_key_configured": active_settings.baidu_ocr_key_configured,
+            "provider_readiness_check": "configuration_only",
             "large_upload_configured": active_settings.blob_upload_configured,
             "max_upload_mb": active_settings.max_upload_bytes // 1024 // 1024,
             "knowledge_base": app.state.knowledge_base.status(),
@@ -233,7 +234,7 @@ def create_app(
 
     @app.get("/api/knowledge/status")
     async def knowledge_status() -> dict[str, object]:
-        return app.state.knowledge_base.status()
+        return cast(dict[str, object], app.state.knowledge_base.status())
 
     @app.get("/api/internal/asr-audio/{token}", include_in_schema=False)
     async def relay_audio(token: str) -> FileResponse:
@@ -447,7 +448,7 @@ def create_app(
 
     @app.get("/api/project")
     async def project_info() -> dict[str, str]:
-        return {"project_root": str(PROJECT_ROOT), "version": "3.3.0"}
+        return {"project_root": str(PROJECT_ROOT), "version": "3.3.1"}
 
     return app
 

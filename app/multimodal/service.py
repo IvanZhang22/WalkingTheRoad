@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
+import time
 from pathlib import PurePosixPath
 from urllib.parse import unquote, urlsplit, urlunsplit
 
@@ -41,6 +43,7 @@ from app.multimodal.providers.stepfun_asr import StepFunASRProvider
 from app.multimodal.providers.unavailable import UnavailableASRProvider, UnavailableOCRProvider
 
 AttachmentPart = InputAudioContentPart | ImageUrlContentPart | FileContentPart
+logger = logging.getLogger(__name__)
 
 
 class MaterialIngestService:
@@ -88,6 +91,7 @@ class MaterialIngestService:
         material_id = f"MAT_{fingerprint[:12].upper()}"
         downloaded = None
         audio_lease = None
+        started_at = time.perf_counter()
         try:
             if modality not in self.enabled_modalities:
                 raise MaterialIngestError(
@@ -108,7 +112,7 @@ class MaterialIngestService:
                     )
                 source_for_provider, audio_lease = await self.audio_relay.publish(downloaded)
             result = await self._call_provider(source_for_provider, modality)
-            return self._normalize_result(
+            material = self._normalize_result(
                 material_id=material_id,
                 fingerprint=fingerprint,
                 filename=downloaded.filename,
@@ -116,13 +120,30 @@ class MaterialIngestService:
                 size_bytes=downloaded.size_bytes,
                 result=result,
             )
+            self._log_result(material, started_at)
+            return material
         except MaterialIngestError as exc:
+            logger.warning(
+                "multimodal_ingest_failed material_id=%s modality=%s code=%s retryable=%s elapsed_ms=%d",
+                material_id,
+                modality.value,
+                exc.code,
+                exc.retryable,
+                _elapsed_ms(started_at),
+            )
             issue = MaterialIssue(
                 code=exc.code,
                 message=exc.public_message,
                 retryable=exc.retryable,
             )
-        except Exception:
+        except Exception as exc:
+            logger.error(
+                "multimodal_ingest_unexpected material_id=%s modality=%s error_type=%s elapsed_ms=%d",
+                material_id,
+                modality.value,
+                type(exc).__name__,
+                _elapsed_ms(started_at),
+            )
             issue = MaterialIssue(
                 code="XDW-MM-UNEXPECTED",
                 message="材料处理失败；服务端没有返回可用内容。",
@@ -147,6 +168,7 @@ class MaterialIngestService:
         filename, modality = _attachment_identity(attachment)
         downloaded = None
         audio_lease = None
+        started_at = time.perf_counter()
         try:
             if modality not in self.enabled_modalities:
                 raise MaterialIngestError(
@@ -163,7 +185,7 @@ class MaterialIngestService:
                     url=attachment.input_audio.url,
                     filename=filename,
                 )
-                return self._normalize_result(
+                material = self._normalize_result(
                     material_id=material_id,
                     fingerprint=fingerprint,
                     filename=filename,
@@ -171,6 +193,8 @@ class MaterialIngestService:
                     size_bytes=0,
                     result=result,
                 )
+                self._log_result(material, started_at)
+                return material
             downloaded = await self.downloader.download(attachment)
             source_for_provider = downloaded
             if modality is MaterialModality.audio and isinstance(self.asr, StepFunASRProvider):
@@ -181,7 +205,7 @@ class MaterialIngestService:
                     )
                 source_for_provider, audio_lease = await self.audio_relay.publish(downloaded)
             result = await self._call_provider(source_for_provider, modality)
-            return self._normalize_result(
+            material = self._normalize_result(
                 material_id=material_id,
                 fingerprint=fingerprint,
                 filename=filename,
@@ -189,13 +213,30 @@ class MaterialIngestService:
                 size_bytes=downloaded.size_bytes,
                 result=result,
             )
+            self._log_result(material, started_at)
+            return material
         except MaterialIngestError as exc:
+            logger.warning(
+                "multimodal_ingest_failed material_id=%s modality=%s code=%s retryable=%s elapsed_ms=%d",
+                material_id,
+                modality.value,
+                exc.code,
+                exc.retryable,
+                _elapsed_ms(started_at),
+            )
             issue = MaterialIssue(
                 code=exc.code,
                 message=exc.public_message,
                 retryable=exc.retryable,
             )
-        except Exception:
+        except Exception as exc:
+            logger.error(
+                "multimodal_ingest_unexpected material_id=%s modality=%s error_type=%s elapsed_ms=%d",
+                material_id,
+                modality.value,
+                type(exc).__name__,
+                _elapsed_ms(started_at),
+            )
             issue = MaterialIssue(
                 code="XDW-MM-UNEXPECTED",
                 message="材料处理失败；服务端没有返回可用内容。",
@@ -213,6 +254,18 @@ class MaterialIngestService:
             modality=modality,
             status=MaterialStatus.failed,
             issues=[issue],
+        )
+
+    @staticmethod
+    def _log_result(material: Material, started_at: float) -> None:
+        logger.info(
+            "multimodal_ingest_completed material_id=%s modality=%s provider=%s status=%s segments=%d elapsed_ms=%d",
+            material.material_id,
+            material.modality.value,
+            material.provider_name or "unknown",
+            material.status.value,
+            len(material.segments),
+            _elapsed_ms(started_at),
         )
 
     async def _call_provider(
@@ -363,6 +416,10 @@ def _has_required_locator(modality: MaterialModality, segment: ProviderSegment) 
     return locator.page is not None or (
         locator.char_start is not None and locator.char_end is not None
     )
+
+
+def _elapsed_ms(started_at: float) -> int:
+    return round((time.perf_counter() - started_at) * 1000)
 
 
 def build_mock_ingest_service() -> MaterialIngestService:

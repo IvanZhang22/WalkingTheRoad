@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from pathlib import PurePosixPath
 from typing import Any
@@ -22,6 +23,7 @@ SUPPORTED_FORMATS = frozenset({"mp3", "wav", "ogg", "pcm"})
 PENDING_STATUSES = frozenset({"PENDING", "QUEUED", "RUNNING", "PROCESSING"})
 FAILED_STATUSES = frozenset({"FAILED", "FAILURE", "ERROR", "CANCELLED", "CANCELED"})
 Sleep = Callable[[float], Awaitable[None]]
+logger = logging.getLogger(__name__)
 
 
 class StepFunASRProvider(ASRProvider):
@@ -116,6 +118,14 @@ class StepFunASRProvider(ASRProvider):
                             await self.sleep(self.poll_interval)
                             continue
                         if status in FAILED_STATUSES:
+                            error = payload.get("error")
+                            stage = error.get("stage") if isinstance(error, dict) else None
+                            safe_stage = _safe_log_value(stage)
+                            logger.warning(
+                                "stepfun_asr_task_failed status=%s upstream_stage=%s",
+                                status,
+                                safe_stage or "unknown",
+                            )
                             raise MaterialIngestError(
                                 "XDW-ASR-UPSTREAM-FAILED",
                                 "阶跃 ASR 任务处理失败。",
@@ -252,3 +262,11 @@ def _non_negative_int(value: Any) -> int | None:
     if isinstance(value, int) and value >= 0:
         return value
     return None
+
+
+def _safe_log_value(value: Any) -> str:
+    """Keep provider diagnostics useful without logging messages, URLs, or credentials."""
+
+    if not isinstance(value, str):
+        return ""
+    return "".join(character for character in value[:80] if character.isalnum() or character in "_-")

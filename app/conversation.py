@@ -322,6 +322,8 @@ class ConversationStore:
             menu_id, options = "material_confirm", {"1": "ANALYSE_MATERIALS", "2": "RECLASSIFY_MATERIALS", "3": "CANCEL_MATERIALS"}
         elif step == "low_confidence":
             menu_id, options = "low_confidence_material", {"1": "UPLOAD_CORRECTED", "2": "USE_HIGH_CONFIDENCE_ONLY", "3": "CANCEL_MATERIALS"}
+        elif step == "manual_review":
+            menu_id, options = "manual_review_transcript", {"1": "CONFIRM_TRANSCRIPT", "2": "UPLOAD_CORRECTED", "3": "CANCEL_MATERIALS"}
         elif step == "result_review":
             menu_id, options = "result_review", {"1": "CONFIRM_RESULT", "2": "MODIFY_RESULT", "3": "RERUN_WORKFLOW", "4": "RETURN_PROJECT_HOME"}
         elif step == "after_confirm":
@@ -777,6 +779,7 @@ class QingxiaodaConversation:
             "privacy_help": (("已匿名", "继续", "上传"), "1"),
             "material_confirm": (("分类正确", "开始分析", "开始", "确认分析"), "1"),
             "low_confidence": (("上传校对", "更清晰", "重新上传"), "1"),
+            "manual_review": (("已核对", "确认转写", "转写正确", "确认继续"), "1"),
             "result_review": (("确认采用", "确认结果", "采用", "确认"), "1"),
             "after_confirm": (("继续", "下一步"), "1"),
             "conflict_confirm": (("替换", "更新", "使用新的", "确认修改"), "1"),
@@ -808,6 +811,11 @@ class QingxiaodaConversation:
                 return "3"
         elif step == "low_confidence":
             if any(token in lowered for token in ("只用", "忽略低置信", "高置信")):
+                return "2"
+            if any(token in lowered for token in ("取消", "不分析", "暂不")):
+                return "3"
+        elif step == "manual_review":
+            if any(token in lowered for token in ("上传校对", "更清晰", "重新上传", "修改转写")):
                 return "2"
             if any(token in lowered for token in ("取消", "不分析", "暂不")):
                 return "3"
@@ -951,6 +959,8 @@ class QingxiaodaConversation:
             return self._material_confirmation_prompt(fields)
         if state.step == "low_confidence":
             return await self._handle_low_confidence(state, message)
+        if state.step == "manual_review":
+            return await self._handle_manual_review(state, message)
 
         if workflow_id == "w2" and state.step == "mode":
             if message not in {"1", "2"}:
@@ -1034,20 +1044,27 @@ class QingxiaodaConversation:
                 "请检查文件格式和网络后重新上传。",
             )
         reliable_chunks: list[str] = []
+        review_chunks: list[str] = []
         names: list[str] = []
         low_confidence: list[str] = []
         for item in materials:
             names.append(item.filename)
             segments = [segment.text for segment in item.segments if segment.automatic_evidence_use]
+            review_segments = [
+                segment.text for segment in item.segments if not segment.automatic_evidence_use
+            ]
             if segments:
                 reliable_chunks.append(f"【{item.filename}】\n" + "\n".join(segments))
             elif item.automatic_evidence_use and (item.automatic_text or item.normalized_text):
                 reliable_chunks.append(
                     f"【{item.filename}】\n{item.automatic_text or item.normalized_text}"
                 )
-            else:
+            if review_segments or not item.automatic_evidence_use:
                 low_confidence.append(item.filename)
-        if not reliable_chunks:
+                review_text = "\n".join(review_segments) or item.normalized_text
+                if review_text:
+                    review_chunks.append(f"【{item.filename}】\n{review_text}")
+        if not reliable_chunks and not review_chunks:
             issues = (
                 "；".join(issue.message for item in materials for issue in item.issues[:1])
                 or "没有提取到可用文本"
@@ -1059,6 +1076,8 @@ class QingxiaodaConversation:
             )
         fields = state.field_values()
         fields["__material_text"] = "\n\n".join(reliable_chunks)
+        fields["__manual_review_text"] = "\n\n".join(review_chunks)
+        fields["__manual_review_only"] = bool(review_chunks and not reliable_chunks)
         fields["__material_names"] = names
         fields["__low_confidence"] = low_confidence
         self.store.save(
@@ -1145,7 +1164,7 @@ class QingxiaodaConversation:
             return self._start_workflow(
                 ConversationState(state.session_id, project=project), state.workflow_id
             )
-        if state.step in {"upload", "material_confirm", "material_reclassify", "low_confidence"}:
+        if state.step in {"upload", "material_confirm", "material_reclassify", "low_confidence", "manual_review"}:
             previous = order[-1]
         else:
             try:
@@ -1273,6 +1292,13 @@ class QingxiaodaConversation:
         fields = state.field_values()
         project = state.project_values()
         if message == "1":
+            if fields.get("__manual_review_only"):
+                self.store.save(
+                    ConversationState(
+                        state.session_id, state.workflow_id, "manual_review", fields, project
+                    )
+                )
+                return self._manual_review_prompt(fields)
             if fields.get("__low_confidence"):
                 self.store.save(
                     ConversationState(
@@ -1301,6 +1327,55 @@ class QingxiaodaConversation:
             )
             return "已取消本次材料处理，尚未开始分析。你可再次确认授权后上传其他材料。"
         return "请回复 1（开始）、2（修改分类）或 3（取消）。"
+
+    @staticmethod
+    def _manual_review_prompt(fields: dict[str, Any]) -> str:
+        transcript = str(fields.get("__manual_review_text", "")).strip()
+        preview_limit = 4000
+        preview = transcript[:preview_limit]
+        suffix = "\n\n（转写较长，此处仅显示前 4000 字。）" if len(transcript) > preview_limit else ""
+        return (
+            "识别服务已经返回转写，但未提供可用于自动证据门控的置信度。"
+            "请先对照原音频核对下面的转写；在你明确确认前，它不会进入正式证据分析。\n\n"
+            f"--- 转写预览 ---\n{preview}{suffix}\n--- 预览结束 ---\n\n"
+            "1. 我已对照原音频核对，确认转写后继续\n"
+            "2. 上传人工校对后的逐字稿或更清晰的音频\n"
+            "3. 取消本次上传"
+        )
+
+    async def _handle_manual_review(self, state: ConversationState, message: str) -> str:
+        fields = state.field_values()
+        project = state.project_values()
+        if message == "1":
+            reviewed_text = str(fields.get("__manual_review_text", "")).strip()
+            if not reviewed_text:
+                return self._failure_reply(
+                    "没有找到等待核对的转写。",
+                    "尚未生成研究结论。",
+                    "请重新上传音频或人工校对后的逐字稿。",
+                )
+            existing_text = str(fields.get("__material_text", "")).strip()
+            fields["__material_text"] = "\n\n".join(
+                part for part in (existing_text, reviewed_text) if part
+            )
+            fields["__manual_review_confirmed"] = True
+            fields["source_context"] = (
+                f"{fields.get('source_context', '')}\n材料说明：研究者已对照原音频人工核对并确认 ASR 转写。".strip()
+            )
+            confirmed_state = ConversationState(
+                state.session_id, state.workflow_id, "manual_review", fields, project
+            )
+            self.store.save(confirmed_state)
+            return await self._run_cached_material(confirmed_state)
+        if message == "2":
+            self.store.save(
+                ConversationState(state.session_id, state.workflow_id, "upload", fields, project)
+            )
+            return "请上传人工校对后的逐字稿或更清晰的音频；原转写仍不会被自动作为关键证据。"
+        if message == "3":
+            self.store.save(ConversationState(state.session_id, fields={}, project=project))
+            return self._menu_for(project)
+        return "请回复 1（确认转写）、2（重新上传）或 3（取消）。"
 
     async def _handle_low_confidence(self, state: ConversationState, message: str) -> str:
         fields = state.field_values()
