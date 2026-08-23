@@ -149,6 +149,7 @@ class ConversationStore:
             "research_method": "",
             "uploaded_materials": [],
             "confirmed_findings": [],
+            "confirmed_result_versions": [],
             "pending_questions": [],
             "workflow_status": {
                 "w1": "NOT_STARTED",
@@ -216,8 +217,16 @@ class ConversationStore:
                 "last_system_action",
             ):
                 project.setdefault(key, "")
-            for key in ("uploaded_materials", "confirmed_findings", "pending_questions"):
+            for key in (
+                "uploaded_materials",
+                "confirmed_findings",
+                "confirmed_result_versions",
+                "pending_questions",
+            ):
                 project.setdefault(key, [])
+            if str(project.get("project_name", "")).strip() in {"不知道", "不知道调研"}:
+                project["project_name"] = "未命名研究项目"
+                project["project_name_source"] = "已清除无效的自动命名，待研究者补充主题"
             project.setdefault("results", {})
             statuses = project.setdefault("workflow_status", {})
             for workflow_id in WORKFLOW_TITLES:
@@ -315,7 +324,8 @@ class ConversationStore:
                 project[destination] = value
         topic = str(project.get("research_topic", "")).strip()
         default_names = {"当前研究项目", "未命名研究项目", ""}
-        if topic and str(project.get("project_name", "")).strip() in default_names:
+        invalid_topics = {"不知道", "不清楚", "没有", "暂无", "无"}
+        if topic and topic not in invalid_topics and str(project.get("project_name", "")).strip() in default_names:
             compact_topic = " ".join(topic.split())[:24].rstrip("。；，、")
             project["project_name"] = f"{compact_topic}调研" if compact_topic else "未命名研究项目"
             project["project_name_source"] = "根据研究主题自动生成，待研究者修改或确认"
@@ -621,12 +631,80 @@ class QingxiaodaConversation:
             return "w1"
         return None
 
+    @staticmethod
+    def _project_entries(workspace: dict[str, Any], *, include_archived: bool = False) -> list[dict[str, Any]]:
+        return [
+            item
+            for item in workspace.get("projects", {}).values()
+            if include_archived or not item.get("archived_at")
+        ]
+
+    def _project_list_text(self, workspace: dict[str, Any]) -> str:
+        active_id = workspace["active_project_id"]
+        entries = self._project_entries(workspace)
+        lines = [
+            f"{index}、{item.get('project_name') or '未命名研究项目'}"
+            + ("（当前）" if item.get("project_id") == active_id else "")
+            for index, item in enumerate(entries, 1)
+        ]
+        response = "当前项目：\n" + ("\n".join(lines) or "- 暂无")
+        archived = [item for item in self._project_entries(workspace, include_archived=True) if item.get("archived_at")]
+        if archived:
+            response += "\n\n已归档：\n" + "\n".join(
+                f"- {item.get('project_name') or '未命名研究项目'}" for item in archived
+            )
+        return response + "\n\n可说“切换项目：【项目序号】/【项目名称】”，例如“切换项目：1”；也可说“新建项目：项目名称”。"
+
+    def _resolve_project_reference(self, workspace: dict[str, Any], reference: str) -> dict[str, Any] | None:
+        value = reference.strip()
+        entries = self._project_entries(workspace)
+        if value.isdigit():
+            index = int(value)
+            if 1 <= index <= len(entries):
+                return entries[index - 1]
+        exact = [item for item in entries if str(item.get("project_name", "")) == value]
+        if exact:
+            return exact[0]
+        lowered = value.lower()
+        partial = [
+            item for item in entries if lowered and lowered in str(item.get("project_name", "")).lower()
+        ]
+        return partial[0] if len(partial) == 1 else None
+
     def _handle_project_command(self, state: ConversationState, message: str) -> str | None:
         """Handle lightweight named projects within one Qingxiaoda session."""
 
         project = state.project_values()
         workspace = project["__workspace"]
         pending = workspace.get("pending_action")
+        if pending and pending.get("type") == "new_project":
+            name = message.strip()
+            if name in {"取消", "不用了", "返回"}:
+                workspace["pending_action"] = None
+                self.store.save(ConversationState(state.session_id, project=project))
+                return "已取消新建项目。"
+            if len(name) < 2:
+                return "请用至少 2 个字说明新项目名称，例如“返乡青年就业调研”；或回复“取消”。"
+            workspace["pending_action"] = None
+            new_project = ConversationStore._new_project(name)
+            workspace["projects"][new_project["project_id"]] = new_project
+            workspace["active_project_id"] = new_project["project_id"]
+            active = self._project_view(workspace, new_project["project_id"])
+            self.store.save(ConversationState(state.session_id, project=active))
+            return f"已新建并切换到“{name}”。\n\n" + self._menu_for(active)
+        if pending and pending.get("type") == "switch_project":
+            if message.strip() in {"取消", "不用了", "返回"}:
+                workspace["pending_action"] = None
+                self.store.save(ConversationState(state.session_id, project=project))
+                return "已取消切换项目。"
+            target = self._resolve_project_reference(workspace, message)
+            if target is None:
+                return self._project_list_text(workspace) + "\n\n请回复要切换到的项目序号或名称；也可回复“取消”。"
+            workspace["pending_action"] = None
+            workspace["active_project_id"] = target["project_id"]
+            active = self._project_view(workspace, target["project_id"])
+            self.store.save(ConversationState(state.session_id, project=active))
+            return f"已切换到“{target['project_name']}”。\n\n" + self._menu_for(active)
         if pending and pending.get("type") == "archive":
             if message in {"1", "确认", "确认归档", "好的", "是"}:
                 target = workspace["projects"].get(pending["project_id"])
@@ -660,18 +738,16 @@ class QingxiaodaConversation:
                 return "好的，项目仍保留在当前列表中。"
             return "是否归档这个项目？回复“确认归档”或“取消”。"
 
-        if message in {"项目列表", "查看项目", "我的项目"}:
-            active_id = workspace["active_project_id"]
-            active_lines: list[str] = []
-            archived_lines: list[str] = []
-            for item in workspace["projects"].values():
-                marker = "（当前）" if item["project_id"] == active_id else ""
-                line = f"- {item['project_name']}{marker}"
-                (archived_lines if item.get("archived_at") else active_lines).append(line)
-            response = "当前项目：\n" + ("\n".join(active_lines) or "- 暂无")
-            if archived_lines:
-                response += "\n\n已归档：\n" + "\n".join(archived_lines)
-            return response + "\n\n可直接说“切换项目：项目名称”或“新建项目：项目名称”。"
+        if message in {"项目列表", "查看项目", "我的项目", "项目"}:
+            return self._project_list_text(workspace)
+        if message.strip() in {"新建项目", "创建项目", "建项目"}:
+            workspace["pending_action"] = {"type": "new_project"}
+            self.store.save(ConversationState(state.session_id, project=project))
+            return "新建项目名称叫什么？例如“返乡青年就业调研”。回复名称即可，也可回复“取消”。"
+        if message.strip() in {"切换项目", "切换", "换项目"}:
+            workspace["pending_action"] = {"type": "switch_project"}
+            self.store.save(ConversationState(state.session_id, project=project))
+            return self._project_list_text(workspace) + "\n\n请问切换到哪个项目？回复项目序号或项目名称即可。"
         if message in {"查看归档项目", "归档项目列表"}:
             archived_projects = [
                 item for item in workspace["projects"].values() if item.get("archived_at")
@@ -693,7 +769,15 @@ class QingxiaodaConversation:
         if command.strip() not in {"新建项目", "切换项目", "归档项目", "恢复项目"}:
             return None
         if not name:
-            return "请在冒号后补充项目名称，例如“新建项目：返乡青年创业调研”。"
+            if command.strip() == "切换项目":
+                workspace["pending_action"] = {"type": "switch_project"}
+                self.store.save(ConversationState(state.session_id, project=project))
+                return self._project_list_text(workspace) + "\n\n请问切换到哪个项目？回复项目序号或项目名称即可。"
+            if command.strip() == "新建项目":
+                workspace["pending_action"] = {"type": "new_project"}
+                self.store.save(ConversationState(state.session_id, project=project))
+                return "新建项目名称叫什么？例如“新建项目：返乡青年创业调研”。"
+            return "请在冒号后补充项目名称。"
         matches = [item for item in workspace["projects"].values() if item["project_name"] == name]
         if command.strip() == "新建项目":
             if matches:
@@ -706,9 +790,9 @@ class QingxiaodaConversation:
             active = self._project_view(workspace, new_project["project_id"])
             self.store.save(ConversationState(state.session_id, project=active))
             return f"已新建项目“{name}”。\n\n" + self._menu_for(new_project)
-        if not matches:
-            return f"没有找到“{name}”。可先说“项目列表”查看名称。"
-        target = matches[0]
+        target = matches[0] if command.strip() == "恢复项目" and matches else self._resolve_project_reference(workspace, name)
+        if target is None:
+            return f"没有找到“{name}”。\n\n" + self._project_list_text(workspace)
         if command.strip() == "切换项目":
             if target.get("archived_at"):
                 return f"“{name}”已归档。请先说“恢复项目：{name}”。"
@@ -1517,10 +1601,22 @@ class QingxiaodaConversation:
         if project.get("target_group"):
             known.append(f"研究对象：{project['target_group']}")
         summary = "\n".join(f"- {item}" for item in known) or "- 还没有记录核心研究信息"
+        confirmed_versions = [
+            item
+            for item in project.get("confirmed_result_versions", [])
+            if isinstance(item, dict) and item.get("workflow_id")
+        ]
+        result_summary = (
+            "、".join(str(item.get("title", "已确认成果")) for item in confirmed_versions[-4:])
+            or "暂无"
+        )
         return (
             f"当前项目：{project.get('project_name') or '当前研究项目'}\n\n"
             f"已知信息：\n{summary}\n\n"
-            f"进度：\n{progress}\n\n{MAIN_MENU}"
+            f"进度：\n{progress}\n\n"
+            f"已确认成果版本：{result_summary}\n"
+            "后续进入其他工作流只会新增或修订项目内容，不会覆盖已确认成果。\n\n"
+            f"{MAIN_MENU}"
         )
 
     def _ending_for(self, project: dict[str, Any]) -> str:
@@ -2030,6 +2126,17 @@ class QingxiaodaConversation:
                     }
                 )
             project["confirmed_findings"] = confirmed
+            if result:
+                versions = list(project.get("confirmed_result_versions", []))
+                versions.append(
+                    {
+                        "workflow_id": workflow_id,
+                        "title": WORKFLOW_TITLES[workflow_id],
+                        "confirmed_at": ConversationStore._now(),
+                        "content": result,
+                    }
+                )
+                project["confirmed_result_versions"] = versions[-20:]
             project["last_system_action"] = f"研究者确认{WORKFLOW_TITLES[workflow_id]}结果"
             self.store.save(
                 ConversationState(state.session_id, workflow_id, "after_confirm", fields, project)
@@ -2037,8 +2144,8 @@ class QingxiaodaConversation:
             next_workflow = {"w1": "w2", "w2": "w3", "w3": "w4"}.get(workflow_id)
             if next_workflow:
                 return (
-                    f"已记录：这份{WORKFLOW_TITLES[workflow_id]}结果由你确认采用。"
-                    "这不替代对原始材料和田野语境的复核。\n\n"
+                    f"已记录：这份{WORKFLOW_TITLES[workflow_id]}结果由你确认采用，并已保存为独立成果版本。"
+                    "后续进入其他工作流只会新增或修订信息，不会覆盖这份已确认成果。\n\n"
                     f"接下来可以继续{WORKFLOW_TITLES[next_workflow]}，也可以回到项目主页或导出已确认成果。\n\n"
                     f"1. 继续{WORKFLOW_TITLES[next_workflow]}\n2. 返回项目主页\n3. 导出当前已确认成果"
                 )

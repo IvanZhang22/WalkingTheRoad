@@ -100,8 +100,9 @@ def test_named_projects_are_isolated_and_archives_can_be_restored() -> None:
         assert "已知背景" in _chat(client, session_id, "理解创业选择的家庭与地方条件")
         assert "已新建项目“暑期支教”" in _chat(client, session_id, "新建项目：暑期支教")
         overview = _chat(client, session_id, "项目列表")
-        assert "河南返乡青年" in overview and "暑期支教（当前）" in overview
-        switched = _chat(client, session_id, "切换项目：河南返乡青年")
+        assert "2、河南返乡青年" in overview and "3、暑期支教（当前）" in overview
+        assert "请问切换到哪个项目" in _chat(client, session_id, "切换项目")
+        switched = _chat(client, session_id, "2")
         assert "河南县域返乡青年创业" in switched
         assert "确认归档" in _chat(client, session_id, "归档项目：河南返乡青年")
         assert "已归档" in _chat(client, session_id, "确认归档")
